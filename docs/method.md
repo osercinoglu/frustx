@@ -245,3 +245,64 @@ Practical consequences:
   raised a divide-by-zero risk in Eq. 1. Since `E_ij` never uses `e_ij`, they get finite
   energies and finite decoy variance like any other pair. The earlier open question is
   closed.
+
+---
+
+# Sign convention: FrustX negates the paper's Eq. 1
+
+The paper writes `F = (E0 − ⟨E_U⟩)/σ`, which makes a **minimally** frustrated contact
+come out **negative** — the native energy sits below the decoy mean. Measured on
+ubiquitin, the literal formula gives a range of −4.05 to +0.55, with a mean of −0.84:
+nearly everything negative, as expected for a well-folded protein.
+
+Every other tool in the field reports the opposite sign. `frustratometeR` classifies
+minimally frustrated as `F > 0.78` and highly frustrated as `F < −1`.
+
+**FrustX negates**, so output matches the field:
+
+| FrustX `frustration_index` | meaning |
+|---|---|
+| high positive | minimally frustrated — native much better than random |
+| near zero | neutral |
+| negative | highly frustrated — native no better than random |
+
+`tests/test_frustration.py` guards this: a designed native must beat shuffled decoys and
+therefore score positive. Anyone "correcting" the sign back to the paper's literal form
+breaks that test.
+
+## Classification thresholds are borrowed and provisional
+
+`MINIMALLY_FRUSTRATED = 0.78` and `HIGHLY_FRUSTRATED = −1.0` are taken from
+frustratometeR so output is comparable. **They were calibrated on the AWSEM
+coarse-grained energy function, not on atomistic REF2015**, and are almost certainly the
+wrong cut points here. Recalibrating them is part of validation.
+
+# Known artifact: glycine positions read as minimally frustrated
+
+Whole-sequence shuffling drops bulky residues onto positions where only glycine fits
+sterically. Decoy energies there balloon, and the native glycine looks superb by
+comparison.
+
+On ubiquitin the C-terminal LRGG tail lands among the *most* minimally frustrated
+contacts:
+
+| contact | F (conventional sign) | E0 | ⟨E_decoy⟩ |
+|---|---|---|---|
+| GLY75–GLY76 | +3.66 | +1.0 | +8.5 |
+| ARG74–GLY76 | +3.45 | −0.4 | +4.4 |
+| LEU73–GLY76 | +2.96 | −1.5 | +3.3 |
+
+That tail is flexible, solvent-exposed, and the functional conjugation site. It should
+read as *frustrated*. What the index is actually reporting is "glycine fits here and
+bulky residues do not" — a composition-and-sterics effect, not folding frustration.
+
+This is inherent to the paper's shuffling protocol rather than to this implementation,
+and the paper does not address it. Two things follow:
+
+1. Treat glycine-rich regions, loops and termini with suspicion in any profile.
+2. Check whether frustratometeR shows the same signature on ubiquitin. If it does, this
+   is a property of the method; if it does not, our decoy generation differs from theirs
+   somewhere.
+
+Not corrected, by explicit decision — documenting it and moving to the frustratometeR
+comparison is more informative than speculating about a fix.
