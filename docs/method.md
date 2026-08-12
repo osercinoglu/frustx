@@ -296,13 +296,144 @@ That tail is flexible, solvent-exposed, and the functional conjugation site. It 
 read as *frustrated*. What the index is actually reporting is "glycine fits here and
 bulky residues do not" — a composition-and-sterics effect, not folding frustration.
 
-This is inherent to the paper's shuffling protocol rather than to this implementation,
-and the paper does not address it. Two things follow:
+**CORRECTED after validation.** This was originally recorded as "inherent to the paper's
+shuffling protocol rather than to this implementation". The frustratometeR comparison
+disproves that. On the same structure, over 344 shared contacts:
 
-1. Treat glycine-rich regions, loops and termini with suspicion in any profile.
-2. Check whether frustratometeR shows the same signature on ubiquitin. If it does, this
-   is a property of the method; if it does not, our decoy generation differs from theirs
-   somewhere.
+| | GLY contacts (median index) | non-GLY |
+|---|---|---|
+| FrustX | **+0.39** | +0.55 |
+| frustratometeR | **−0.41** | +0.40 |
 
-Not corrected, by explicit decision — documenting it and moving to the frustratometeR
-comparison is more informative than speculating about a fix.
+frustratometeR classifies glycine contacts as *frustrated*; we classify them as
+*minimally frustrated*. The signs are opposite, not merely different in magnitude
+(PHE45–GLY47: ours +0.57, theirs −0.50).
+
+So this is a defect on our side, not a property of the published protocol. It is very
+likely a symptom of the Eq. 2 degeneracy documented below rather than an independent bug:
+an index reducible to per-residue burial will read a small, well-fitting glycine as
+optimal regardless of what it actually interacts with.
+
+---
+
+# Validation against frustratometeR (1UBQ)
+
+Setup: identical input PDB (frustratometeR's own prepared `1ubq_A.pdb`, 76 residues),
+FrustX at 1000 decoys with `--protocol min --min-seq-sep 2` to match their contact set.
+frustratometeR at `Mode="configurational"`, defaults.
+
+Note `SeqDist=12` does **not** mean minimum |i−j| ≥ 12, as its name suggests. Their
+output contains contacts at |i−j| = 2 (74 of them). `SeqDist` selects the AWSEM
+`Welltype` classification — `short` / `long` / `water-mediated` — via the two bundled
+LAMMPS binaries. Their effective minimum sequence separation is 2.
+
+## Result: weak agreement
+
+```
+FrustX 475 contacts, frustratometeR 389, shared 344
+Spearman +0.159   Pearson +0.133   class agreement 56.7%
+
+                 min      median    max      sd
+FrustX          -0.18     +0.53    +2.84    0.43
+frustratometeR  -2.75     +0.37    +2.89    1.07
+```
+
+FrustX finds **zero** highly frustrated contacts in ubiquitin (minimum −0.18, threshold
+−1.0). frustratometeR finds 30. A frustration index that never reports frustration is
+not functioning.
+
+## Diagnosis: the Eq. 2 cancellation is the cause
+
+Predicting each contact index from the mean of its two residues' indices:
+
+| | ρ |
+|---|---|
+| **FrustX** | **+0.865** |
+| frustratometeR | +0.464 |
+
+Our contact index is 87% reducible to a residue-level quantity; theirs is not. This is
+the algebraic cancellation showing up in data: `E_ij = ½(R_i + R_j)` contains no term
+describing the specific i–j interaction, so contact-level structure cannot survive.
+
+Corroborating evidence:
+
+- Our per-residue values correlate **better** with their *single-residue* index
+  (ρ = +0.348) than our contact values do with their *configurational* index
+  (ρ = +0.159). We built a single-residue measure while intending a contact measure.
+- By AWSEM well type: ρ = +0.32 (`long`), +0.27 (`short`), but **−0.05
+  (`water-mediated`)** — 46% of contacts. Water-mediated contacts are exactly those whose
+  energy depends on the specific pair rather than on burial.
+
+## Caveat
+
+AWSEM is not ground truth, and the paper's premise is that atomistic and coarse-grained
+frustration differ. Weak correlation alone would not condemn the implementation. But
+"no frustrated contacts at all" and "87% reducible to residue identity" are internal
+red flags independent of whether frustratometeR is right.
+
+## Experiment: does the Eq. 2 background explain the disagreement?
+
+Two sweeps, 1000 decoys each, same contacts, `protocol="min"`.
+
+**Sweep 1** — `E_ij = ½(R_i + R_j) + α·e_ij` for α ∈ {0, +1, −½}, the three defensible
+readings of Eq. 2's summation ranges. All three were indistinguishable
+(ρ = 0.147–0.170, zero frustrated contacts, pair-specificity 0.86). The reason is
+magnitude: `e_ij` ≈ −0.7 REU against `½(R_i + R_j)` ≈ −10 REU, so every α is a small
+perturbation on a dominant term. **The cancellation was real but never the binding
+constraint.**
+
+**Sweep 2** — `E_ij = e_ij + w·½(R_i + R_j)`, sweeping the background weight. `w = 1` is
+Eq. 2 as written; `w = 0` is the direct pair energy alone, which is structurally what
+AWSEM/frustratometeR uses.
+
+```
+variant       rho     min   median    max     sd   n<-1   GLYmed   pair-spec
+frustratometeR --   -2.75    0.37    2.89   1.07     30    -0.41     +0.464
+w=0.0      +0.128   -3.15    0.04    6.17   0.92     11    -0.29     +0.438
+w=0.05     +0.176   -1.62    0.55    5.87   0.68      2    +0.25     +0.637
+w=0.1      +0.172   -0.80    0.56    5.41   0.59      0    +0.35     +0.716
+w=0.25     +0.160   -0.39    0.56    4.17   0.50      0    +0.41     +0.802
+w=0.5      +0.157   -0.16    0.56    3.11   0.46      0    +0.43     +0.839
+w=1.0      +0.159   -0.11    0.55    2.82   0.44      0    +0.43     +0.855
+```
+
+### Two independent conclusions
+
+**1. The background term is what makes the index degenerate.** At `w = 0` every pathology
+disappears and the statistical character matches frustratometeR closely:
+
+| | FrustX `w=0` | frustratometeR |
+|---|---|---|
+| pair-specificity | +0.438 | +0.464 |
+| spread (sd) | 0.92 | 1.07 |
+| minimum | −3.15 | −2.75 |
+| contacts below −1 | 11 | 30 |
+| glycine median | **−0.29** | **−0.41** |
+
+The glycine artifact **reverses sign and disappears** at `w = 0`. It was a symptom of the
+background term, exactly as suspected — confirming the correction recorded above.
+
+**2. None of this explains the disagreement with frustratometeR.** ρ stays at 0.13–0.18
+across the entire sweep, while pair-specificity moves from 0.44 to 0.86. The correlation
+is *insensitive to the whole Eq. 2 question*. Whatever drives the disagreement is not the
+contact-energy definition.
+
+So: dropping the background gives an index with the right shape, the right spread, real
+frustrated contacts and correct glycine behaviour — but it still ranks individual contacts
+differently from AWSEM. Right distribution, different assignment.
+
+### What this does not settle
+
+ρ ≈ 0.15 at n = 344 is statistically significant (p ≈ 0.005) but weak. Remaining
+candidates, in the order worth testing:
+
+1. **Decoy locality.** We shuffle the entire sequence, so a decoy energy for contact
+   (i,j) depends on every other position too. The AWSEM configurational decoy randomises
+   the identities and geometry *of the contacting pair*, holding the rest native — a far
+   more local perturbation. The atomistic paper does specify whole-sequence shuffling, but
+   the two are not statistically equivalent.
+2. **Relaxation.** These runs used `protocol="min"`. The default `"relax"` may change the
+   decoy spread substantially, and σ is Eq. 1's denominator.
+3. **Genuine method difference.** REF2015 and AWSEM are different force fields, and the
+   paper's premise is that atomistic resolution reveals what coarse-graining cannot. Low
+   correlation is not by itself proof of a bug.
