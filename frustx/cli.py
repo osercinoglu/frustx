@@ -20,7 +20,8 @@ from pathlib import Path
 from frustx import __version__
 # Only frustx.config at module scope: it is import-free by design, so `frustx --help`
 # and `--version` stay instant. Everything that touches PyRosetta is imported in main().
-from frustx.config import DEFAULT_CUTOFF, DEFAULT_N_DECOYS, RELAX_PROTOCOLS
+from frustx.config import (DEFAULT_BACKGROUND_WEIGHT, DEFAULT_CUTOFF,
+                          DEFAULT_N_DECOYS, RELAX_PROTOCOLS)
 
 
 def build_parser():
@@ -48,6 +49,11 @@ def build_parser():
     p.add_argument("--min-seq-sep", type=int, default=1,
                    help="minimum |i-j| within a chain for a pair to count as a contact; "
                         "1 keeps sequential neighbours, which is the paper's literal reading")
+    p.add_argument("--background-weight", type=float, default=DEFAULT_BACKGROUND_WEIGHT,
+                   help="weight w on the many-body background in "
+                        "E_ij = e_ij + w/2 (R_i + R_j). 0 (default) uses the direct pair "
+                        "energy alone; 1 reproduces the paper's Eq. 2, which was measured "
+                        "to give a degenerate index -- see docs/method.md")
     p.add_argument("--packing-frustration", action="store_true",
                    help="keep the repulsive fa_rep term when measuring e_ij. This is the "
                         "paper's separate 'packing frustration', which diagnoses structure "
@@ -102,6 +108,7 @@ def main(argv=None):
         repeats=args.repeats,
         cutoff=args.cutoff,
         min_seq_sep=args.min_seq_sep,
+        background_weight=args.background_weight,
         progress=progress,
     )
     elapsed = time.time() - started
@@ -126,6 +133,7 @@ def main(argv=None):
         "repeats": args.repeats,
         "cutoff": args.cutoff,
         "min_seq_sep": args.min_seq_sep,
+        "background_weight": args.background_weight,
         "packing_frustration": args.packing_frustration,
         "elapsed_seconds": round(elapsed, 1),
     }, indent=2) + "\n")

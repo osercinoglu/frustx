@@ -33,3 +33,21 @@ RELAX_PROTOCOLS = ("relax", "min", "none")
 # Almost certainly the wrong cut points here; recalibrating is part of validation.
 MINIMALLY_FRUSTRATED = 0.78
 HIGHLY_FRUSTRATED = -1.0
+
+# Weight on Eq. 2's many-body background term in
+#
+#     E_ij = e_ij + w * 1/2 (R_i + R_j)
+#
+# w = 1 is Eq. 2 as the paper writes it (its literal form is 1/2(R_i + R_j), which
+# differs from w=1 only by the e_ij term -- measured to be indistinguishable, since
+# e_ij ~ -0.7 REU against 1/2(R_i+R_j) ~ -10 REU).
+#
+# DEFAULT IS 0, a deliberate departure from the paper. At w=1 the index is degenerate:
+# validated against frustratometeR on 1UBQ it reports ZERO frustrated contacts where
+# frustratometeR reports 30, and 86% of its per-contact signal is reducible to a
+# residue-level quantity. At w=0 the pair-specificity (0.44), spread (0.92) and glycine
+# behaviour all match frustratometeR closely. See docs/method.md for the sweep.
+#
+# This does NOT fix the correlation with frustratometeR, which sits at rho ~ 0.15
+# regardless of w. It fixes the character of the index, not its agreement.
+DEFAULT_BACKGROUND_WEIGHT = 0.0

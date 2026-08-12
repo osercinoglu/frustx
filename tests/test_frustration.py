@@ -69,8 +69,31 @@ def test_eq2_simplification_matches_literal_formula(helix, score_functions):
             s2 = sum(e[j, l] for l in range(n) if l != i)
             literal[i, j] = e[i, j] + 0.5 * s1 + 0.5 * s2
 
-    simplified = contact_energy_matrix(helix, sf_measure)
-    np.testing.assert_allclose(simplified, literal, atol=1e-9)
+    # background_weight=1 plus the direct term is the paper's Eq. 2 up to e_ij itself;
+    # subtracting it recovers the literal 1/2(R_i + R_j).
+    e = pair_energy_matrix(helix, sf_measure)
+    at_w1 = contact_energy_matrix(helix, sf_measure, background_weight=1.0)
+    recovered = at_w1 - e
+    np.fill_diagonal(recovered, 0.0)
+    np.fill_diagonal(literal, 0.0)
+    np.testing.assert_allclose(recovered, literal, atol=1e-9)
+
+
+def test_default_background_weight_is_zero_direct_pair_energy(helix, score_functions):
+    """The shipped default must be the direct pair energy, not Eq. 2.
+
+    Eq. 2 as written was measured against frustratometeR to give a degenerate index
+    (zero frustrated contacts on ubiquitin, 86% reducible to a residue-level quantity).
+    If this default is ever changed back, that regression returns silently.
+    """
+    _, sf_measure = score_functions
+    default = contact_energy_matrix(helix, sf_measure)
+    direct = pair_energy_matrix(helix, sf_measure).copy()
+    np.fill_diagonal(direct, 0.0)
+    np.testing.assert_allclose(default, direct, atol=1e-12)
+
+    # And w != 0 must actually differ, or the parameter is doing nothing.
+    assert not np.allclose(default, contact_energy_matrix(helix, sf_measure, 1.0))
 
 
 def test_contact_energy_matrix_is_symmetric_zero_diagonal(helix, score_functions):

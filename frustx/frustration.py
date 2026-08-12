@@ -43,7 +43,8 @@ from frustx.decoys import make_decoy, native_reference
 from frustx.energies import pair_energy_matrix
 
 from frustx.config import (  # constants live there so the CLI can read
-    DEFAULT_N_DECOYS,          # them without importing PyRosetta
+    DEFAULT_BACKGROUND_WEIGHT,  # them without importing PyRosetta
+    DEFAULT_N_DECOYS,
     HIGHLY_FRUSTRATED,
     MINIMALLY_FRUSTRATED,
 )
@@ -96,14 +97,26 @@ def ca_coords_from_pose(pose):
     )
 
 
-def contact_energy_matrix(pose, sf_measure):
-    """Eq. 2 contact energies for a pose: E_ij = 1/2 (R_i + R_j).
+def contact_energy_matrix(pose, sf_measure, background_weight=DEFAULT_BACKGROUND_WEIGHT):
+    """Contact energies for a pose:
 
-    R_i is residue i's total pairwise interaction energy. The direct e_ij term cancels
-    out of Eq. 2 exactly -- derivation and numerical check in docs/method.md.
+        E_ij = e_ij + w * 1/2 (R_i + R_j)
+
+    where e_ij is the direct pair interaction and R_i is residue i's total pairwise
+    interaction energy. w = 1 recovers Eq. 2 of the paper; w = 0 (the default) uses the
+    direct pair energy alone.
+
+    The default departs from the paper deliberately. Eq. 2's background term is ~14x
+    larger than e_ij, and at w = 1 it swamps the contact: the index becomes 86% reducible
+    to a residue-level quantity and cannot report a frustrated contact at all. See
+    DEFAULT_BACKGROUND_WEIGHT in config.py and the sweep in docs/method.md.
     """
-    R = pair_energy_matrix(pose, sf_measure).sum(axis=1)
-    E = 0.5 * (R[:, None] + R[None, :])
+    e = pair_energy_matrix(pose, sf_measure)
+    if background_weight == 0.0:
+        E = e.copy()
+    else:
+        R = e.sum(axis=1)
+        E = e + background_weight * 0.5 * (R[:, None] + R[None, :])
     np.fill_diagonal(E, 0.0)
     return E
 
@@ -118,6 +131,7 @@ def compute_frustration(
     repeats=1,
     cutoff=DEFAULT_CUTOFF,
     min_seq_sep=1,
+    background_weight=DEFAULT_BACKGROUND_WEIGHT,
     progress=None,
 ):
     """Run the full protocol and return a FrustrationResult.
@@ -144,7 +158,7 @@ def compute_frustration(
     )
 
     native = native_reference(native_pose, sf_pack, protocol=protocol, repeats=repeats)
-    E0 = contact_energy_matrix(native, sf_measure)
+    E0 = contact_energy_matrix(native, sf_measure, background_weight)
 
     # Accumulate running sums rather than holding 1000 (n x n) matrices: at n=500 that
     # would be 2 GB.
@@ -155,7 +169,7 @@ def compute_frustration(
         decoy = make_decoy(
             native_pose, sf_pack, seed=seed + k, protocol=protocol, repeats=repeats
         )
-        E = contact_energy_matrix(decoy, sf_measure)
+        E = contact_energy_matrix(decoy, sf_measure, background_weight)
         total += E
         total_sq += E * E
         if progress is not None:
