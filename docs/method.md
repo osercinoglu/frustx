@@ -204,3 +204,44 @@ atom pair falls inside Rosetta's interaction cutoff. Whether these should enter 
 statistics as genuine zeros or be excluded is not addressed by the paper. They will have
 zero variance across decoys where the residues stay far apart, which risks a divide-by-zero
 in Eq. 1 — this needs an explicit decision when the frustration index is implemented.
+
+---
+
+# Eq. 2 simplifies: the direct contact term cancels
+
+Expanding Eq. 2 with `R_i = Σ_k e_ik` (residue i's total interaction energy, diagonal
+zero):
+
+```
+Σ_{k≠j} e_ik = R_i − e_ij
+Σ_{l≠i} e_jl = R_j − e_ij
+
+E_ij = e_ij + ½(R_i − e_ij) + ½(R_j − e_ij) = ½ (R_i + R_j)
+```
+
+**The `e_ij` term cancels exactly.** Verified numerically against a literal double-loop
+transcription of Eq. 2 on 1UBQ: max difference 7.1e-15.
+
+The cancellation is robust to the ambiguity in the summation ranges. Whether `k` runs
+over all residues except `j`, or over all except both `i` and `j`, the result is the same,
+because `e_ii = 0`.
+
+## What this means
+
+`E_ij` depends only on the two residues' *total* interaction energies — not on how
+strongly they touch each other. The paper's contact-level frustration index is therefore
+a **pair average of a residue-level quantity**. The contact set enters only by selecting
+which (i, j) pairs get reported, not by weighting the direct interaction between them.
+
+This follows from the paper's own stated intent — *"considering all the interaction
+energies that involve changing any of the two residues that are in contact"* — so it
+appears deliberate rather than a transcription error. It is worth confirming against
+`frustratometeR`, whose AWSEM configurational index does not share this property.
+
+Practical consequences:
+
+- **Fast.** Row sums, not a double loop over pairs.
+- **The zero-`e_ij` worry is void.** The 98 of 550 ubiquitin contacts with `e_ij = 0`
+  raised a divide-by-zero risk in Eq. 1. Since `E_ij` never uses `e_ij`, they get finite
+  energies and finite decoy variance like any other pair. The earlier open question is
+  closed.
