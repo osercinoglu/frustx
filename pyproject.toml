@@ -7,6 +7,9 @@ requires-python = ">=3.11"
 # `pyrosetta-installer` helper, not from PyPI, so pip cannot resolve it.
 dependencies = ["numpy", "pandas", "biopython"]
 
+[project.scripts]
+frustx = "frustx.cli:main"
+
 [project.optional-dependencies]
 dev = ["pytest"]
 

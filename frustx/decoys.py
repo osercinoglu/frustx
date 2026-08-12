@@ -45,19 +45,7 @@ from pyrosetta.rosetta.protocols.minimization_packing import MinMover, PackRotam
 from pyrosetta.rosetta.protocols.relax import FastRelax
 from pyrosetta.rosetta.utility import vector1_bool
 
-# Relaxation protocol. The paper says "short Monte-Carlo relaxation" without naming a
-# mover, and the two readings differ in both cost and outcome (measured on a shuffled
-# ubiquitin decoy, 1000-decoy cost in brackets):
-#
-#   "min"    chi-only gradient minimisation   0.35 s -> 413 REU   [~6 min]
-#   "relax"  FastRelax, backbone frozen       3.63 s -> 429 REU   [~1 h]
-#
-# "relax" is the more literal reading -- FastRelax is Monte-Carlo based, minimisation is
-# not.  "min" is an order of magnitude cheaper and reached a lower energy here.  Since
-# the relaxation protocol sets the decoy spread, and that spread is the DENOMINATOR of
-# Eq. 1, this choice moves every frustration index. It is settled empirically in the
-# frustratometeR validation, not by preference.
-RELAX_PROTOCOLS = ("relax", "min", "none")
+from frustx.config import RELAX_PROTOCOLS  # see there for measured costs
 
 
 def _sidechain_only_movemap():

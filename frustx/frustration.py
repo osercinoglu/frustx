@@ -42,14 +42,11 @@ from frustx.contacts import DEFAULT_CUTOFF, Residue, contact_pairs
 from frustx.decoys import make_decoy, native_reference
 from frustx.energies import pair_energy_matrix
 
-DEFAULT_N_DECOYS = 1000  # "giving 1000 appropriately distributed decoys for each contact"
-
-# Classification thresholds, taken from frustratometeR so our output is comparable.
-# NOTE: these were calibrated on the AWSEM coarse-grained energy function, NOT on
-# atomistic REF2015. They are almost certainly the wrong cut points here. They exist so
-# output is readable during development; recalibrating them is part of validation.
-MINIMALLY_FRUSTRATED = 0.78
-HIGHLY_FRUSTRATED = -1.0
+from frustx.config import (  # constants live there so the CLI can read
+    DEFAULT_N_DECOYS,          # them without importing PyRosetta
+    HIGHLY_FRUSTRATED,
+    MINIMALLY_FRUSTRATED,
+)
 
 
 @dataclass

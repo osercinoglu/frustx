@@ -18,8 +18,7 @@ import numpy as np
 from Bio.PDB import PDBParser
 from Bio.PDB.Polypeptide import is_aa
 
-# Cutoff on the Ca-Ca distance, in Angstrom, from the paper's Methods.
-DEFAULT_CUTOFF = 10.0
+from frustx.config import DEFAULT_CUTOFF
 
 
 @dataclass(frozen=True)
