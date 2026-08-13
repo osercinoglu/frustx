@@ -28,6 +28,12 @@ exception is tiny hand-built test fixtures under `tests/`, which are code, not d
 
 Scratch/probe files go in the session scratchpad, not the repo.
 
+**But the session scratchpad is wiped between sessions.** Anything worth regenerating --
+reference outputs, validation runs, decoy ensembles -- goes in `results/` (gitignored,
+DVC-tracked), not the scratchpad. A frustratometeR reference run and a 500-decoy FrustX
+run were lost this way once; both were reproducible, but the compute was not free.
+Conclusions belong in `docs/method.md` immediately, not held in a scratch file.
+
 ## Environment
 
 `.venv/` (gitignored). Deps via `pip install -e ".[dev]"`.
