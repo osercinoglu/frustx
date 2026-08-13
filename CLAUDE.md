@@ -51,6 +51,20 @@ PATH=".venv/bin:$PATH" .venv/bin/python -c "import pyrosetta_installer; pyrosett
 
 Run tests with `.venv/bin/python -m pytest tests/ -q`.
 
+DVC is installed in the venv with the GCS backend (`dvc 3.67.1`, `dvc_gs.GSFileSystem`):
+
+```bash
+.venv/bin/python -m pip install "dvc[gs]"
+```
+
+It is deliberately **not** in `pyproject.toml` — it is infrastructure for moving data
+around, not something `frustx` or the tests import, and putting it in the `dev` extra
+would force a ~200 MB install on anyone who just wants to run pytest. (`matplotlib` *is*
+in the `dev` extra, since `scripts/plot_*.py` genuinely import it.)
+
+**The repo is not `dvc init`-ed yet and no remote is configured** — that needs the user's
+bucket URL and GCS credentials.
+
 ## Layout
 
 | Path | What |
