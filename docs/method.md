@@ -437,3 +437,81 @@ candidates, in the order worth testing:
 3. **Genuine method difference.** REF2015 and AWSEM are different force fields, and the
    paper's premise is that atomistic resolution reveals what coarse-graining cannot. Low
    correlation is not by itself proof of a bug.
+
+> **All three were tested. See the next section** — candidates 1 and 2 are ruled out, and
+> the disagreement is localised to AWSEM's water-mediated contacts (candidate 3).
+
+---
+
+# Resolution: the disagreement is concentrated in AWSEM's water-mediated contacts
+
+## Experiment: relaxation protocol (candidate 2)
+
+Two matched 500-decoy runs on the frustratometeR-prepared `1ubq_A.pdb`, `w = 0`,
+`--min-seq-sep 2`, differing only in `--protocol`:
+
+| | ρ vs frustratometeR | sd | median | GLY median |
+|---|---|---|---|---|
+| `min` | +0.141 | 0.94 | +0.04 | −0.31 |
+| `relax` | +0.146 | 0.93 | +0.01 | −0.44 |
+
+The two runs correlate with **each other** at ρ = +0.951 (n = 457 defined contacts).
+Side-chain relaxation of the decoys does not materially change the index.
+
+**Candidate 2 is ruled out.** With the contact-energy definition (the `w` sweep) and decoy
+locality (pair-local decoys, ρ +0.265 vs +0.273) already eliminated, no mechanical choice
+in our implementation accounts for the disagreement.
+
+## Where the disagreement actually lives
+
+Splitting the shared contacts by AWSEM's own well type is decisive, and reproduces
+independently in both runs:
+
+| AWSEM well type | n | ρ (`min`) | ρ (`relax`) | p |
+|---|---|---|---|---|
+| direct — short + long | 186 | **+0.309** | **+0.312** | < 0.0001 |
+| water-mediated | 158 | −0.030 | −0.014 | 0.71 / 0.86 |
+| all | 344 | +0.141 | +0.146 | ≈ 0.008 |
+
+The methods agree significantly on contacts where **both model direct atomic interaction**,
+and not at all — statistically indistinguishable from zero — on contacts where AWSEM
+invokes its water-mediated well. Water-mediated contacts are 46 % of the shared set, so
+averaging them in is what drags the overall ρ from 0.31 down to 0.14.
+
+Restricted to direct contacts, our index also separates *their* classes in the right
+direction: their `highly` contacts sit at our +0.16, their `minimally` at our +0.86
+(separation +0.70; +0.67 for `relax`).
+
+### Why this is the expected result, not a defect
+
+AWSEM's water-mediated term is an **explicit** desolvation well: for pairs in the
+~6.5–9.5 Å shell its depth is modulated by local residue density, standing in for a
+bridging water molecule. REF2015 has no explicit water at all — desolvation enters
+implicitly through `fa_sol`. On those pairs the two functions are not approximating the
+same quantity, so there is no reason for their frustration indices to track.
+
+This is the paper's own premise stated quantitatively: atomistic resolution and
+coarse-grained resolution differ *specifically* where the coarse-grained model substitutes
+an effective term for atoms it does not represent.
+
+### Honest statement of what is and is not established
+
+Agreement on the direct-contact subset (ρ ≈ 0.31, p < 10⁻⁴, consistent across two
+independent decoy protocols) is evidence the implementation is not fundamentally wrong.
+It is **not** proof of correctness: ρ = 0.31 leaves most of the variance unexplained, and
+low correlation is also what an undiscovered bug looks like. The only remaining test that
+can distinguish "correct but different" from "subtly wrong" is **reproducing a specific
+published figure from Chen et al. (2020)** against our own output. Until that is done,
+this section records a consistent hypothesis, not a validated one.
+
+## Side finding: σ = 0 contacts at the cutoff edge
+
+17 of 475 contacts have `decoy_std == 0` and `native_energy == 0` — no REF2015 term fires
+for the pair in the native structure or in any of 500 decoys. All lie at Cα–Cα 8.5–9.9 Å
+(defined pairs: median 7.5 Å), i.e. the outer edge of the 10 Å cutoff, where a Cα-based
+contact criterion admits pairs with no atomistic interaction. Eq. 1 is 0/0 there; they are
+emitted with `frustration_class = "undefined"` rather than a fabricated number.
+
+None of the 17 appear in frustratometeR's contact set, so they never entered any
+comparison above. Worth noting as an intrinsic mismatch between a Cα contact definition
+and an all-atom energy — not a bug, but a reason the raw contact counts differ (475 vs 389).

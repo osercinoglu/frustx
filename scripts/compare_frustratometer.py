@@ -29,6 +29,39 @@ def spearman(a, b):
     return float(np.corrcoef(ra, rb)[0, 1])
 
 
+def spearman_p(rho, n):
+    """Two-sided p-value for a rank correlation, via the usual t approximation.
+
+    t = rho * sqrt((n-2)/(1-rho^2)) on n-2 df; the tail is the regularised incomplete
+    beta I_x(df/2, 1/2) with x = df/(df+t^2), evaluated by Lentz continued fraction.
+    Spelled out here only to avoid taking a scipy dependency for one number.
+    """
+    if n < 4 or abs(rho) >= 1:
+        return float("nan")
+    from math import sqrt, lgamma, log, exp
+    t = rho * sqrt((n - 2) / (1 - rho**2))
+    df = n - 2
+    x = df / (df + t * t)
+    a, b = df / 2.0, 0.5
+    front = exp(a * log(x) + b * log(1 - x)
+                - (lgamma(a) + lgamma(b) - lgamma(a + b))) / a
+    f, c, d = 1.0, 1.0, 0.0
+    for i in range(300):
+        m_ = i // 2
+        if i == 0:
+            num = 1.0
+        elif i % 2 == 0:
+            num = (m_ * (b - m_) * x) / ((a + 2*m_ - 1) * (a + 2*m_))
+        else:
+            num = -((a + m_) * (a + b + m_) * x) / ((a + 2*m_) * (a + 2*m_ + 1))
+        d = 1.0 / (1e-30 if abs(1.0 + num * d) < 1e-30 else 1.0 + num * d)
+        c = 1e-30 if abs(1.0 + num / c) < 1e-30 else 1.0 + num / c
+        f *= c * d
+        if abs(1.0 - c * d) < 1e-10:
+            break
+    return front * (f - 1.0)
+
+
 def load_frustratometer(path):
     """Their per-contact table: whitespace-separated with a header line."""
     df = pd.read_csv(path, sep=r"\s+")
@@ -86,12 +119,40 @@ def main(frustx_dir, frustra_file):
     agree = (m["our_class"] == m["their_class"]).mean()
     print(f"\nexact agreement: {agree:.1%}")
 
-    # Correlation by AWSEM well type: a systematic split would say our contact energy
-    # behaves differently for buried vs water-mediated contacts.
+    # Correlation by AWSEM well type. This is the single most informative split we have:
+    # AWSEM's water-mediated well is an EXPLICIT desolvation term (depth modulated by
+    # local residue density, standing in for a bridging water), whereas REF2015 has no
+    # explicit water and handles desolvation implicitly via fa_sol. So the two functions
+    # are not approximating the same quantity on those pairs, and the aggregate
+    # correlation is a mixture of one subset that should agree and one that need not.
     print("\n--- Spearman by AWSEM well type ---")
     for well, grp in m.groupby("Welltype"):
         if len(grp) > 5:
-            print(f"  {well:<16} n={len(grp):<4} rho={spearman(grp['our_index'], grp['their_index']):+.3f}")
+            r = spearman(grp["our_index"], grp["their_index"])
+            print(f"  {well:<16} n={len(grp):<4} rho={r:+.3f}  p={spearman_p(r, len(grp)):.4f}")
+
+    direct = m[m["Welltype"] != "water-mediated"]
+    if len(direct) > 5 and len(direct) < len(m):
+        r = spearman(direct["our_index"], direct["their_index"])
+        print(f"  {'DIRECT (short+long)':<16} n={len(direct):<4} rho={r:+.3f}  "
+              f"p={spearman_p(r, len(direct)):.4f}")
+        # Does our index rank THEIR classes correctly on the subset where both methods
+        # model the same physics? Positive separation = yes.
+        hi = direct[direct["their_class"] == "highly"]["our_index"]
+        lo = direct[direct["their_class"] == "minimally"]["our_index"]
+        if len(hi) and len(lo):
+            print(f"    our index on their classes: highly {hi.mean():+.2f} (n={len(hi)})"
+                  f"  minimally {lo.mean():+.2f} (n={len(lo)})"
+                  f"  separation {lo.mean() - hi.mean():+.2f}")
+
+    # Contacts where Eq. 1 is undefined: sigma == 0 because no REF2015 term fires for the
+    # pair in the native OR any decoy. These sit at the outer edge of the Ca-Ca cutoff,
+    # where a Ca-based contact criterion admits pairs with no atomistic interaction.
+    undef = ours["our_index"].isna().sum()
+    if undef:
+        print(f"\n--- {undef} of {len(ours)} FrustX contacts are undefined (decoy sigma = 0) ---")
+        print(f"    shared with frustratometeR: "
+              f"{merged['our_index'].isna().sum()}  (excluded from all statistics above)")
 
     # The glycine/terminus artifact: does frustratometeR show it too?
     print("\n--- contacts involving GLY (the suspected shuffling artifact) ---")
