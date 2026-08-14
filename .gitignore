@@ -18,3 +18,9 @@ results/
 .pytest_cache/
 .dvc/cache
 .dvc/tmp
+/results
+
+# GCP service-account keys must never be committed. Real keys live in ~/.gcp (mode 700).
+*-service-account*.json
+*gserviceaccount*.json
+githubrepodvcs-*.json

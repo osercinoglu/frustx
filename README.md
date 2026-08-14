@@ -11,18 +11,66 @@ coarse-grained one.
 See [`docs/method.md`](docs/method.md) for the method spec and
 [`CLAUDE.md`](CLAUDE.md) for how the repo is organised.
 
-**Status: early.** Full pipeline runs end to end; not yet validated against a reference implementation.
+**Status: early.** Full pipeline runs end to end. Cross-checked against frustratometeR
+(AWSEM) on 1UBQ: the two agree on direct contacts (Spearman +0.31, p < 10⁻⁴) and not on
+AWSEM's water-mediated contacts, where REF2015 has no explicit counterpart. Not yet
+validated against the paper itself — see `docs/method.md`.
 
-## Setup
+## Setup on a new machine
+
+Requires Python ≥ 3.11 and ~4 GB of disk (PyRosetta is 3.2 GB).
 
 ```bash
+git clone https://github.com/osercinoglu/frustx.git
+cd frustx
+
 python3 -m venv .venv
 .venv/bin/python -m pip install -e ".[dev]"
-# PATH prefix is required -- the installer calls a bare `pip`, not the venv's.
+
+# PyRosetta is not on PyPI and cannot be a declared dependency.
+# The PATH prefix is REQUIRED: pyrosetta_installer shells out to a bare `pip`, so
+# without it the 3.2 GB lands in whichever python `pip` resolves to -- not the venv.
 PATH=".venv/bin:$PATH" .venv/bin/python -m pip install pyrosetta-installer
 PATH=".venv/bin:$PATH" .venv/bin/python -c "import pyrosetta_installer; pyrosetta_installer.install_pyrosetta(serialization=True)"
-.venv/bin/python -m pytest tests/ -q
+
+.venv/bin/python -m pytest tests/ -q     # 40 tests; all but tests/test_contacts.py need PyRosetta
 ```
+
+### Data (DVC + GCS)
+
+No input or output data is in git. Structures, decoy runs and result tables live in
+`gs://frustx` and are tracked by `results.dvc`.
+
+DVC is intentionally not in `pyproject.toml` — it is data infrastructure, not something
+`frustx` imports, and it would make `pip install -e ".[dev]"` ~200 MB heavier:
+
+```bash
+.venv/bin/python -m pip install "dvc[gs]"
+```
+
+Authenticate with a GCP service-account key that has `roles/storage.objectAdmin` on the
+bucket. **Keep the key outside the repo** and readable only by you:
+
+```bash
+mkdir -p ~/.gcp && chmod 700 ~/.gcp
+# copy your key to ~/.gcp/<key>.json, then:
+chmod 600 ~/.gcp/<key>.json
+.venv/bin/dvc remote modify --local storage credentialpath ~/.gcp/<key>.json
+```
+
+`--local` is not optional: it writes `.dvc/config.local`, which `.dvc/.gitignore`
+excludes. Without it the path goes into the tracked `.dvc/config`.
+
+Then fetch the data:
+
+```bash
+.venv/bin/dvc pull          # populates results/
+.venv/bin/dvc status -c     # "in sync" = local and bucket agree
+```
+
+After producing new results, `dvc add results/ && dvc push`, then commit the updated
+`results.dvc`. Alternatively `gcloud auth application-default login` works instead of a
+key file, if you have the SDK installed.
 
 ## Usage
 
@@ -43,6 +91,7 @@ Useful flags:
 | `--protocol` | `relax` (default, FastRelax) or `min` (~10× faster) — this sets Eq. 1's denominator, so it moves every index |
 | `--packing-frustration` | keep `fa_rep`, giving the paper's separate structure-quality measure |
 | `--cutoff` | Cα–Cα contact cutoff, default 10 Å |
+| `--background-weight` | weight `w` on the Eq. 2 background term, default `0` (direct pair energy only). `w=1` is Eq. 2 as literally written, which makes the index degenerate — see `docs/method.md` |
 
 Colour the output in PyMOL with `spectrum b, blue_white_red, all`. High positive =
 minimally frustrated, matching frustratometeR's convention (the paper's Eq. 1 uses the
