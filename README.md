@@ -32,8 +32,9 @@ The deeper limitation: frustratometeR's indices are largely residue-additive (56
 configurational, 95% mutational), while FrustX's is 23%. That 95% is a property of their
 *protocol*, not of AWSEM — the same energy through FrustX's protocol is only 39%
 additive. **frustratometeR cannot validate
-per-contact specificity, which is the property FrustX exists to provide.** Reproducing a
-figure from Chen et al. (2020) is the remaining test. See `docs/method.md`.
+per-contact specificity, which is the property FrustX exists to provide.** Reproducing a figure from Chen et al. (2020) is **not** available as a test: the paper
+publishes no per-contact value for any system, and its own Eq. 2 index is ~76%
+residue-additive by construction. See `docs/method.md`.
 
 ## Setup on a new machine
 

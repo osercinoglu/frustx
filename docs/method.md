@@ -1091,6 +1091,93 @@ discards pair specificity. **None of this validates FrustX's per-contact resolut
 weak positive agreement with a coarse-grained model is consistent with FrustX being right,
 being wrong, or both being wrong. That still needs Chen et al.
 
+# Chen et al. publishes no per-contact values: that validation route is closed
+
+Every previous section ends with "this still needs Chen et al." Having now read the full
+text (Europe PMC `PMC7683549`), that route does not exist.
+
+## What the paper actually publishes
+
+Figure captions, read directly:
+
+| Figure | Content | Quantitative? |
+|---|---|---|
+| 1 | Funnel schematic | no |
+| 2 | 5 allosteric conformer pairs: structures **+ a per-residue profile at right** | **partly** |
+| 3 | 12 enzymes, cartoons with green/red contact sticks | no |
+| 4 | 7 protein complexes, all-atom vs coarse-grained renderings | no |
+| 5 | EGFR–inhibitor renderings; **5e** affinity correlation | 5e only — **drug** |
+| 6 | COX–inhibitor renderings; **6d** box plot | 6d only — **drug** |
+
+**No figure, drug or non-drug, reports a frustration value for an identified contact.**
+Figs. 3 and 4 are galleries: green and red lines on a cartoon, no axis, no scale, no
+statistic. The only quantitative panels in the paper are 5e and 6d, and both are ligand
+work, which is out of scope here.
+
+The main-text scalars in the non-drug half are 14.2% (atomistic) vs 26.0% (AWSEM)
+minimally frustrated interface contacts, over an undisclosed protein-assembly database,
+with the interface-contact definition in a supplementary PDF.
+
+**Consequence: "validate FrustX per-contact against Chen et al." is not achievable.** This
+is a closed question, not an outstanding task. Nothing downstream should be written as if
+the check is merely pending.
+
+## The deeper reason it was never coherent
+
+Eq. 2 collapses to `E_ij = ½(R_i + R_j)` — the direct term cancels exactly (verified to
+7.1e-15 above). That is *precisely* the additive `a_i + a_j` form, the same construction as
+frustratometeR's mutational numerator (`fix_backbone.cpp:5214-5240`). The paper's own
+contact index is therefore built to be a residue property.
+
+Measured on 1UBQ from the retained decoy tensor, varying only `w`:
+
+| w | additive R² | what it is |
+|---|---|---|
+| 0.0 | **0.204** | FrustX default, `e_ij` only |
+| 0.5 | 0.741 | intermediate |
+| 1.0 | **0.757** | **Chen et al. Eq. 2 as written** |
+
+The per-contact σ puts back a little pair specificity, but the paper's published index is
+~76% one-body. **FrustX's per-contact specificity is a deliberate departure from the paper,
+not a reproduction of it.** A paper whose own index is three-quarters residue-additive
+cannot validate a property it does not have. The `w = 0` choice must stand or fall on
+internal grounds, as already recorded — this closes the door on external adjudication of it
+from the paper as well as from frustratometeR.
+
+## The one quantitative non-drug target that does exist
+
+Fig. 2's right column: "a quantification of the minimally frustrated interactions (green)
+or highly frustrated interactions (red) **in the vicinity of each residue**" for the pairs
+1XTQ/1XTS, 1OIV/1OIW, 1KAO/2RAP, 1HH4/1MH1, 1H4X/1H4Y, with local Qi in black.
+
+This is a per-*residue* spatial profile, one level coarser than per-contact. It can test
+whether FrustX puts frustration in the right places; it cannot test any individual
+contact's Z-score.
+
+Two limits, both from the text itself:
+
+- **"Vicinity" is never defined.** The word appears exactly once in the paper, in this
+  caption. "Local Qi" likewise. There is no radius, in the caption, the Results, or the
+  Methods. Any reproduction must expose the radius as a parameter and can only compare
+  profile *shape*, never absolute counts.
+- **The counts depend on the classification thresholds**, which the paper does not state
+  either, and which we have already shown are only half-supported for REF2015 (`+0.78`
+  supported, `−1.0` not).
+
+Smallest candidate: **1XTQ / 1XTS** (human Rheb·GDP / Rheb·GTP), 169 and 171 residues,
+single chain, no numbering breaks.
+
+## Blocker: heteroatoms crash the contact map
+
+Verified live on 1XTQ. Rosetta loads 171 residues — 169 protein plus `MG` and `pdb_GDP`,
+both *recognised* rather than dropped by `-ignore_unrecognized_res` — and
+`ca_coords_from_pose` raises `RuntimeError: ResidueType MG does not have an atom CA`.
+
+Every Fig. 2 candidate is a nucleotide-binding protein and carries the same problem. A
+protein-only, single-chain preparation step is a prerequisite for any of this work, and
+`run.json`'s `n_residues` should be asserted against the expected count so silent drops
+cannot pass unnoticed.
+
 # Superseded: relaxation protocol and the well-type split
 
 Retained because the measurements are sound and the `min`/`relax` comparison is still
