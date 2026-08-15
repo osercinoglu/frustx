@@ -444,7 +444,7 @@ candidates, in the order worth testing:
 
 ---
 
-# The reference implementation: frustratometeR's configurational index is not a Z-score
+# The reference implementation: frustratometeR's configurational index is a rescaled energy, by design
 
 Everything in the two sections above compares our index against a quantity we had
 misidentified. This section records what frustratometeR actually computes, read from its
@@ -493,6 +493,53 @@ Two further properties of their decoy construction, for the record:
 - **The draws are unseeded.** `rand` is imported; `srand` is not called anywhere. Their
   reference numbers are bit-identical on every run, so all sampling noise in every
   comparison in this document has been on the FrustX side.
+
+## Why this is correct, not an optimisation bug
+
+The compute-once guard is not a shortcut that happens to be safe. It is forced by the
+definition of the configurational decoy. From the body of `compute_decoy_ixns`
+(`fix_backbone.cpp:5255-5277`):
+
+```c
+if (strcmp(tert_frust_mode, "configurational")==0) {
+  // choose random rij, rho_i, rho_j
+  rand_i_resno = get_random_residue_index();
+  rand_j_resno = get_random_residue_index();
+  rij = get_residue_distance(rand_i_resno, rand_j_resno);
+  while (rij > tert_frust_cutoff || rand_i_resno == rand_j_resno) { ... }
+  // get new pair of random residues for burial term
+  rand_i_resno = get_random_residue_index();
+  rand_j_resno = get_random_residue_index();
+  rho_i = get_residue_density(rand_i_resno);
+  rho_j = get_residue_density(rand_j_resno);
+}
+else {
+  // if in mutational mode, use configurational parameters passed into the function
+  rij = rij_orig;  rho_i = rho_i_orig;  rho_j = rho_j_orig;
+}
+```
+
+Note what configurational does with its arguments: the function is *handed* this contact's
+native distance and densities (`rij_orig`, `rho_i_orig`, `rho_j_orig`) and discards them,
+redrawing all three from protein-wide pools. Nothing about contact (i, j) survives into the
+decoy. The distribution therefore cannot depend on the contact, and computing it once per
+protein is the only self-consistent implementation.
+
+Mutational takes the other branch: geometry pinned to the native contact, only the residue
+identities randomised. That is why mutational has 389 distinct (mean, sd) pairs and
+configurational has one.
+
+The two modes ask different questions, and both are legitimate:
+
+| Mode | Question | Yardstick |
+|---|---|---|
+| configurational | Is this contact better than a randomly assembled contact *anywhere in this protein*? | protein-wide, identical for every contact |
+| mutational | Is this contact better than *other amino acids at this same geometry*? | contact-specific |
+| FrustX (Eq. 1) | Is this contact better than other amino acids at this same geometry, *with side chains repacked and scored at all-atom resolution*? | contact-specific |
+
+FrustX's decoy is a mutational decoy, not a configurational one. Every comparison in the
+two superseded sections above was therefore cross-mode as well as cross-resolution, which
+is a second reason the numbers were never going to line up.
 
 ## Consequence: the headline correlation was never index-vs-index
 

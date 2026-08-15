@@ -15,8 +15,9 @@ See [`docs/method.md`](docs/method.md) for the method spec and
 Against frustratometeR (AWSEM) on 1UBQ: residue-level agreement is ρ = +0.41 (p = 2e-4,
 n = 76) vs `singleresidue` mode, and per-contact ρ = +0.32 (p = 1e-9, n = 344) vs
 `mutational` mode. The per-contact comparison against `configurational` mode has been
-withdrawn — that mode uses one global decoy mean/sd for the whole protein, so its index is
-not a per-contact Z-score.
+withdrawn — that mode's decoy discards the contact's own geometry, so one decoy mean/sd
+covers the whole protein and its index is a rescaled energy rather than a per-contact
+Z-score. It is also the wrong mode to compare against: FrustX's decoy is a mutational one.
 
 The deeper limitation: frustratometeR's indices are largely residue-additive (56%
 configurational, 95% mutational), while FrustX's is 23%. **frustratometeR cannot validate
