@@ -270,7 +270,7 @@ minimally frustrated as `F > 0.78` and highly frustrated as `F < −1`.
 therefore score positive. Anyone "correcting" the sign back to the paper's literal form
 breaks that test.
 
-## Classification thresholds are borrowed, and measurably wrong
+## Classification thresholds are borrowed; the fractions differ, the cut point survives
 
 `MINIMALLY_FRUSTRATED = 0.78` and `HIGHLY_FRUSTRATED = −1.0` are taken from
 frustratometeR so output is comparable. **They were calibrated on the AWSEM
@@ -298,9 +298,10 @@ The class fractions the borrowed cut points produce:
 | fR configurational | 33.4% | 58.9% | 7.7% |
 | fR mutational | 42.4% | 48.8% | 8.7% |
 
-FrustX under-calls minimally frustrated by a factor of ~2 and highly frustrated by a
-factor of ~4. Under the borrowed thresholds four contacts in five are reported neutral,
-which is not a useful classification.
+FrustX assigns ~2x fewer contacts to the minimally frustrated class and ~4x fewer to the
+highly frustrated class, leaving four contacts in five neutral. Read on its own this looks
+like a miscalibration; the test two subsections below shows it is not, at least on the
+minimally frustrated side. Recorded here because it is what motivated the investigation.
 
 ### Percentile matching is the obvious fix and it is wrong
 
@@ -319,15 +320,66 @@ configurational's fraction is a *raw energy* cut in disguise (its index is the e
 rescaled by two constants — see below), and mutational's is a cut on a quantity that is
 95% residue-additive. Neither is a per-contact frustration frequency worth reproducing.
 
-### The defensible basis, and the assumption it rests on
+### Testing the cut point on its own terms
 
-FrustX's index is a genuine per-contact Z-score, so a cut at Z = 1 has a self-contained
-meaning — *fewer than ~16% of random substitutions at this position pair do this well* —
-that needs no AWSEM calibration at all. But "~16%" is a normal-distribution statement,
-and we have never checked that the decoy energies are normal. `scripts/dump_decoy_samples.py`
-retains the full per-decoy tensor (production only keeps running sums) so the shape can be
-tested. **Until that test is done the thresholds stay as they are**, wrong but documented,
-rather than being replaced by a number with no better justification.
+FrustX's index is a genuine per-contact Z-score, so a cut at Z = 0.78 has a self-contained
+meaning — *fewer than ~22% of random substitutions at this position pair do this well* —
+that needs no AWSEM calibration. But that is a normal-distribution statement, and the decoy
+energies had never been checked for normality: production keeps only running sums.
+`scripts/dump_decoy_samples.py` retains the full per-decoy tensor so the shape can be
+tested; `scripts/test_decoy_normality.py` runs the test. Below: 1UBQ, 200 `min` decoys,
+`min_seq_sep = 2`, 475 contacts (456 with σ > 0), matching `frustx_min500/run.json`.
+
+**The decoy energies are emphatically not normal.** Median excess kurtosis +10.3
+(p95 +183.9), median skewness −1.04, and a D'Agostino–Pearson K² omnibus test rejects
+normality for **98.0%** of contacts at p < 0.05. This is not subtle: the repack occasionally
+finds a far better or far worse arrangement than typical, and those outliers dominate the
+higher moments.
+
+The K² implementation is hand-written (scipy is not a dependency) and was checked against
+distributions with known answers before use: 5.6% rejection on normal input at α = 0.05,
+100% on exponential (skew +1.88) and on uniform (excess kurtosis −1.18, true −1.2).
+
+**Despite that, Z still tracks the empirical decoy tail on the minimally frustrated side.**
+For each contact the empirical tail is the fraction of decoys with energy at or below the
+native — the honest answer to "how many random substitutions do this well":
+
+| Z band | n | empirical tail p10 | median | p90 | normal predicts |
+|---|---|---|---|---|---|
+| 0.4 – 0.6 | 24 | 13.1% | 24.5% | 34.1% | 30.9% |
+| 0.7 – 0.9 | 13 | 10.2% | 15.5% | 20.4% | 21.2% |
+| 1.0 – 1.2 | 11 | 6.5% | 13.5% | 18.5% | 13.6% |
+| 1.4 – 1.6 | 11 | 5.0% | 6.5% | 8.5% | 6.7% |
+
+At Z ≥ 1.0 the median empirical tail sits within 0.2 points of the normal prediction. The
+heavy tails inflate the higher moments without displacing the median much, which is why a
+formal normality test can fail overwhelmingly while the practical Z-to-tail mapping holds.
+The p10–p90 spread is real — contacts sharing a Z differ by roughly ±8 points in actual
+tail — so Z is a noisy classifier, but not a meaningless one.
+
+**So the earlier "measurably wrong" verdict is withdrawn for the minimally frustrated
+threshold.** At Z = 0.78 the empirical tail is ~15%: fewer than one random substitution in
+six does as well as the native. That is a coherent definition of "minimally frustrated" on
+its own terms. The 17.5%-vs-33% fraction gap against AWSEM is therefore *not* evidence of a
+misplaced cut point — it says FrustX and frustratometeR disagree about how many contacts of
+ubiquitin are strongly determined, which is a substantive difference between an atomistic
+and a coarse-grained energy function, not a calibration error.
+
+**The highly frustrated threshold remains unresolved.** Only 10 contacts reach Z ≤ −1.0, too
+few to calibrate against. Worse, inverting the map gives no clean ordering on that side: an
+empirical tail of 80% implies Z ≈ −0.42 while a tail of 90% implies Z ≈ −0.29, i.e. the
+worse contacts map to the *higher* Z. With n = 15 and n = 20 and IQRs spanning ~0.5 that
+inversion may be noise, but nothing here supports −1.0 either.
+
+**Decision: both constants stay as they are.** `0.78` is now supported rather than merely
+borrowed. `−1.0` is retained for want of evidence to move it, and should be treated as
+provisional in any result that depends on the highly-frustrated class.
+
+### What this rests on
+
+One protein, 200 decoys, and Z bands holding 11–13 contacts each. The direction of the
+result is clear but the numbers in the table are not precise. Repeating it on two or three
+more structures is the obvious next step, and is cheap: ~13 min per protein at this size.
 
 # Known artifact: glycine positions read as minimally frustrated
 
