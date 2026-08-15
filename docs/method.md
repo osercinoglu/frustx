@@ -270,12 +270,64 @@ minimally frustrated as `F > 0.78` and highly frustrated as `F < −1`.
 therefore score positive. Anyone "correcting" the sign back to the paper's literal form
 breaks that test.
 
-## Classification thresholds are borrowed and provisional
+## Classification thresholds are borrowed, and measurably wrong
 
 `MINIMALLY_FRUSTRATED = 0.78` and `HIGHLY_FRUSTRATED = −1.0` are taken from
 frustratometeR so output is comparable. **They were calibrated on the AWSEM
-coarse-grained energy function, not on atomistic REF2015**, and are almost certainly the
-wrong cut points here. Recalibrating them is part of validation.
+coarse-grained energy function, not on atomistic REF2015.** Measured on 1UBQ
+(`frustx_min500`, 458 contacts with a defined index; the 17 σ = 0 contacts of the 475 are
+excluded — see the cutoff-edge artifact below):
+
+| index distribution | mean | sd | p5 | p25 | med | p75 | p95 | min | max |
+|---|---|---|---|---|---|---|---|---|---|
+| FrustX (REF2015) | +0.204 | 0.875 | −0.58 | −0.23 | −0.01 | +0.39 | +1.81 | −3.30 | +5.97 |
+| fR configurational | +0.408 | 1.065 | −1.31 | −0.30 | +0.38 | +0.98 | +2.39 | −2.75 | +2.89 |
+| fR mutational | +0.484 | 1.056 | −1.16 | −0.48 | +0.57 | +1.34 | +2.04 | −1.87 | +2.43 |
+
+The standard deviations are similar, but the *shapes* are not. FrustX's interquartile
+range is 0.62 against 1.28 and 1.82 for the two reference modes, while its extremes run
+further in both directions. FrustX's index is sharply peaked near zero with long tails;
+the AWSEM indices are broad and comparatively light-tailed. A cut point that lands in the
+shoulder of one distribution lands in the far tail of the other.
+
+The class fractions the borrowed cut points produce:
+
+| | minimally (≥ +0.78) | neutral | highly (≤ −1.0) |
+|---|---|---|---|
+| FrustX (REF2015) | 17.5% | 80.3% | 2.2% |
+| fR configurational | 33.4% | 58.9% | 7.7% |
+| fR mutational | 42.4% | 48.8% | 8.7% |
+
+FrustX under-calls minimally frustrated by a factor of ~2 and highly frustrated by a
+factor of ~4. Under the borrowed thresholds four contacts in five are reported neutral,
+which is not a useful classification.
+
+### Percentile matching is the obvious fix and it is wrong
+
+Forcing FrustX to call the same *fraction* of contacts into each class as the reference
+requires these cut points:
+
+| target | minimally ≥ | highly ≤ |
+|---|---|---|
+| fR configurational fractions (33.4% / 7.7%) | +0.160 | −0.475 |
+| fR mutational fractions (42.4% / 8.7%) | +0.060 | −0.452 |
+
+A threshold of +0.06 would label any contact marginally better than its decoy mean
+"minimally frustrated". That is not a calibration, it is a rank cut wearing a Z-score's
+clothes. The rule fails because the reference fractions are not ground truth:
+configurational's fraction is a *raw energy* cut in disguise (its index is the energy
+rescaled by two constants — see below), and mutational's is a cut on a quantity that is
+95% residue-additive. Neither is a per-contact frustration frequency worth reproducing.
+
+### The defensible basis, and the assumption it rests on
+
+FrustX's index is a genuine per-contact Z-score, so a cut at Z = 1 has a self-contained
+meaning — *fewer than ~16% of random substitutions at this position pair do this well* —
+that needs no AWSEM calibration at all. But "~16%" is a normal-distribution statement,
+and we have never checked that the decoy energies are normal. `scripts/dump_decoy_samples.py`
+retains the full per-decoy tensor (production only keeps running sums) so the shape can be
+tested. **Until that test is done the thresholds stay as they are**, wrong but documented,
+rather than being replaced by a number with no better justification.
 
 # Known artifact: glycine positions read as minimally frustrated
 
