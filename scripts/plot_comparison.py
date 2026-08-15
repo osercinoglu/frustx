@@ -1,16 +1,26 @@
 """Visual comparison of FrustX against frustratometeR on the same structure.
 
-Produces two figures:
+**Point this at the `mutational` table, not `configurational`.** FrustX builds its
+decoys by randomising residue identities at fixed native geometry, which is exactly
+what AWSEM calls a mutational decoy (fix_backbone.cpp:5255-5277). Configurational
+decoys redraw the geometry too, so their index is the raw contact energy rescaled by
+two protein-wide constants and is not a per-contact Z-score at all. Comparing against
+it is a category error -- see docs/method.md.
+
+Produces three figures:
 
   1. <out>/class_ratios.png -- how each tool distributes contacts across the three
      frustration classes (minimally / neutral / highly), as relative ratios so the
      differing contact counts do not confound the comparison.
 
   2. <out>/scatter.png -- per-contact frustration index, ours vs theirs, on the shared
-     contacts only. Split by AWSEM well type, because that split is the main finding:
-     the two methods track each other on direct contacts and not at all on
-     water-mediated ones, where AWSEM has an explicit desolvation well and REF2015
-     has only implicit fa_sol.
+     contacts only, split by AWSEM well type.
+
+     NOTE on the well types: `short` (r < 6.5 A) is the only *direct* well. `long` is
+     protein-mediated, not direct -- an earlier reading of these plots got that
+     backwards (RenumFiles.pl:50-64).
+
+  3. <out>/index_distributions.png -- the marginal distributions.
 
 Usage:
     python scripts/plot_comparison.py <frustx_out_dir> <frustratometeR_file> <out_dir>
@@ -79,15 +89,19 @@ def plot_class_ratios(ours, theirs, out_path):
 def plot_scatter(m, out_path):
     """Per-contact index, ours vs theirs, coloured by AWSEM well type.
 
-    Left panel: all shared contacts. Right panel: direct contacts only (short + long),
-    i.e. the subset where both force fields model the same physics.
+    Left panel: all shared contacts. Right panel: the direct-contact subset.
+
+    AWSEM's well types are assigned in RenumFiles.pl:50-64: r < 6.5 A is `short`,
+    r >= 6.5 A with both densities < 2.6 is `water-mediated`, and everything else is
+    `long`. Only `short` is a direct contact -- `long` is protein-mediated. An earlier
+    version of this figure grouped short+long and labelled it "direct", which is wrong.
     """
-    direct = m[m["Welltype"] != "water-mediated"]
+    direct = m[m["Welltype"] == "short"]
     fig, axes = plt.subplots(1, 2, figsize=(11.5, 5.2), sharex=True, sharey=True)
 
     for ax, sub, title in (
         (axes[0], m, "All shared contacts"),
-        (axes[1], direct, "Direct contacts only (short + long)"),
+        (axes[1], direct, "Direct contacts only (short, r < 6.5 A)"),
     ):
         for well, grp in sub.groupby("Welltype"):
             ax.scatter(grp["their_index"], grp["our_index"], s=22, alpha=0.65,
@@ -163,7 +177,7 @@ def main(frustx_dir, frustra_file, out_dir):
 
     ours = load_frustx(Path(frustx_dir) / "contacts.csv")
     theirs = load_frustratometer(frustra_file)
-    m = ours.merge(theirs, on=["i", "j"], how="inner").dropna(
+    m = ours.merge(theirs, on=["ci", "i", "cj", "j"], how="inner").dropna(
         subset=["our_index", "their_index"])
 
     ov, tv = plot_class_ratios(ours, theirs, out / "class_ratios.png")

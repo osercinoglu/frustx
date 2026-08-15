@@ -12,9 +12,12 @@ See [`docs/method.md`](docs/method.md) for the method spec and
 [`CLAUDE.md`](CLAUDE.md) for how the repo is organised.
 
 **Status: early, not yet validated per-contact.** Full pipeline runs end to end.
-Against frustratometeR (AWSEM) on 1UBQ: residue-level agreement is ρ = +0.41 (p = 2e-4,
-n = 76) vs `singleresidue` mode, and per-contact ρ = +0.32 (p = 1e-9, n = 344) vs
-`mutational` mode. The per-contact comparison against `configurational` mode has been
+Against frustratometeR (AWSEM) on 1UBQ, always in `mutational`/`singleresidue` mode —
+FrustX's decoy randomises identity at fixed native geometry, which is a *mutational*
+decoy: residue-level agreement is ρ = **+0.48** (p = 1e-5, n = 76) vs `singleresidue`
+mode using a true per-residue Z-score (ρ = +0.41 using the CLI's `mean_frustration`),
+and per-contact ρ = +0.32 (p = 1e-9, n = 344) vs `mutational` mode, rising to +0.40 on
+direct contacts alone. The per-contact comparison against `configurational` mode has been
 withdrawn — that mode's decoy discards the contact's own geometry, so one decoy mean/sd
 covers the whole protein and its index is a rescaled energy rather than a per-contact
 Z-score. It is also the wrong mode to compare against: FrustX's decoy is a mutational one.

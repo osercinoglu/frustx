@@ -805,6 +805,52 @@ FrustX `mean_frustration` per residue vs frustratometeR `singleresidue` `FrstInd
 **rho = +0.412, p = 0.0002, n = 76.** Note the singleresidue output has no `FrstState`
 column, so classification cannot be compared -- only rank.
 
+### Follow-up: `mean_frustration` was the wrong FrustX quantity
+
+`mean_frustration` is the mean of a residue's *contact* indices (`frustx/output.py:67`)
+— a summary of pair frustration, not a residue Z-score. Their `singleresidue` index is a
+genuine per-residue Z-score. The comparison was therefore not like-for-like.
+
+With the full decoy tensor available (`results/validation/decoy_samples/1ubq_min200.npz`)
+the matching quantity can be built directly:
+
+```
+R_i = sum_j E_ij                                  residue i's total contact energy
+Z_i = ( <R_i>_decoys - R_i_native ) / sd(R_i)     same sign convention as the contact index
+```
+
+This needs the retained tensor, not the production running sums: contact energies within a
+residue are correlated, so `sd(R_i)` cannot be recovered by adding per-contact variances.
+
+| FrustX quantity | vs their `singleresidue` | Pearson |
+|---|---|---|
+| A. `mean_frustration` (mean of contact indices) | ρ = **+0.412**, p = 2.2e-4 | +0.376 |
+| B. true residue Z-score (from the tensor) | ρ = **+0.478**, p = 1.3e-5 | +0.494 |
+
+A vs B correlate at ρ = +0.862 — related but not interchangeable, which is why the choice
+mattered. **ρ = +0.478 is the best agreement with frustratometeR we have obtained**, at any
+level, in any mode.
+
+`scripts/compare_singleresidue.py` produces both, plus
+`results/validation/plots_mutational/singleresidue_scatter.png`.
+
+Caveat that does not go away: our decoys shuffle the *whole* sequence, while their
+singleresidue decoys mutate only residue i and leave every other position native. Ours
+perturbs residue i's environment at the same time as its identity, so it is the noisier
+estimator of the two.
+
+### Why the residue level is the one comparison that is not confounded
+
+The additive-R² result below shows frustratometeR's *contact* indices are largely a sum of
+two residue terms, which is what makes contact-level agreement uninterpretable — we cannot
+tell shared pair physics from shared burial. **At residue level that objection disappears**,
+because both sides are explicitly one-body quantities. There is no pair-specific component
+being masked. ρ = +0.478 between an all-atom and a coarse-grained model, on the same
+structure, is a real and interpretable agreement.
+
+It is also, for the same reason, not evidence that FrustX's *per-contact* resolution works.
+That still needs Chen et al.
+
 ## The result that reframes everything: how one-body is each index?
 
 Fitting each quantity to `X ~ c + a_i + a_j`, the exact functional form of a sum of two
