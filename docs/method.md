@@ -696,6 +696,94 @@ provide.** This is a limit of the comparison, not a defect in either tool, and i
   degenerate index, and it is the published reference. That is worth understanding before
   concluding the sweep settled the question.
 
+
+---
+
+# Rechecking the w sweep against a working target
+
+The original `w` sweep (above) concluded that the correlation with frustratometeR is
+"insensitive to the whole Eq. 2 question" -- rho stayed at 0.13-0.18 from w = 0 to w = 1.
+That conclusion was drawn against `configurational` mode, whose index is affine in its own
+native energy. It had to be rechecked against `mutational`, which has a genuine
+per-contact sigma.
+
+## Method: one ensemble, every w, in closed form
+
+`scripts/sweep_background.py`. The contact energy is linear in w:
+
+    E_ij(w) = e_ij + w * B_ij,     B_ij = 1/2 (R_i + R_j)
+
+so over a decoy ensemble the first two moments follow analytically:
+
+    mean_E(w) = <e> + w <B>
+    var_E(w)  = var(e) + 2 w cov(e, B) + w^2 var(B)
+
+Accumulating the five running sums `Se, See, Sb, Sbb, Seb` gives the index at any w from a
+**single** decoy pass. This replaces one 500-decoy job per w with one job total, and -- more
+importantly than the compute saving -- every w shares the *identical* decoys, so
+differences between w values are not confounded by decoy sampling noise the way
+independent runs are.
+
+Validated before use: a 20-decoy probe reproduced the committed 500-decoy `w = 0` index at
+rho = +0.893, consistent with sampling noise at that ensemble size.
+
+Run: 500 decoys, `protocol="min"`, `min_seq_sep=2`, on the frustratometeR-prepared
+`1ubq_A.pdb`. Output `results/validation/sweep_w/sweep_min500.csv`.
+
+## Result: the original conclusion was an artifact, but w = 1 is still not vindicated
+
+| w | rho vs configurational | rho vs mutational | additive R² | contacts < −1 |
+|---|---|---|---|---|
+| 0.0 | +0.136 | +0.321 | 0.193 | 10 |
+| 0.05 | +0.177 | +0.458 | 0.408 | 1 |
+| 0.1 | +0.176 | +0.501 | 0.526 | 0 |
+| 0.25 | +0.163 | +0.526 | 0.672 | 0 |
+| 0.5 | +0.156 | +0.536 | 0.734 | 0 |
+| 1.0 | +0.149 | **+0.537** | 0.754 | 0 |
+
+Against configurational, rho is flat -- reproducing the original sweep and explaining why
+it concluded w does not matter. Against mutational, rho rises monotonically and by 67%,
+from +0.321 to +0.537 (p 5e-27). **So w does matter, and the earlier "insensitive"
+conclusion was an artifact of scoring against a constant-sigma target.**
+
+But `additive R²` rises in lockstep, 0.193 -> 0.754. Raising w makes the FrustX index more
+residue-additive, and frustratometeR's mutational index is 95% residue-additive. The
+suspicion is therefore that the agreement is bought purely by becoming equally degenerate.
+
+## Removing the one-body component settles it
+
+Residualising `X ~ c + a_i + a_j` out of **both** sides before correlating:
+
+| w | raw rho | one-body removed |
+|---|---|---|
+| 0.0 | +0.321 | −0.116 (p 0.03) |
+| 0.05 | +0.458 | −0.070 (p 0.19) |
+| 0.1 | +0.501 | −0.056 (p 0.30) |
+| 0.25 | +0.526 | −0.015 (p 0.79) |
+| 0.5 | +0.536 | +0.026 (p 0.64) |
+| 1.0 | +0.537 | +0.045 (p 0.41) |
+
+**Zero contact-specific agreement at every w.** The entire w-dependence -- all 0.22 of the
+rise -- is the one-body component. The only nominally significant entry is w = 0, and it is
+*negative*.
+
+## What this settles
+
+- The earlier sweep's conclusion is withdrawn: rho is *not* insensitive to w. It looked
+  that way only because the target had no per-contact information.
+- The corrected sweep nonetheless does **not** argue for w = 1. Higher w buys agreement
+  with frustratometeR only by making the index a residue-level quantity, which is the
+  property it was built not to be, and at w >= 0.1 it reports **zero** frustrated contacts
+  in ubiquitin.
+- `DEFAULT_BACKGROUND_WEIGHT = 0.0` therefore stands, but the justification has changed.
+  It is not "w does not affect agreement" (false). It is: **frustratometeR cannot
+  adjudicate w at all**, because agreement with it at any w is entirely one-body, so w must
+  be chosen on internal grounds -- pair specificity (0.193 vs 0.754 additive R²) and the
+  ability to report frustrated contacts at all (10 vs 0).
+- This is the third distinct conclusion in this document that was produced by comparing
+  against `configurational` mode and did not survive contact with a working target. Any
+  future claim resting on that comparison should be treated as unsupported until rechecked.
+
 # Superseded: relaxation protocol and the well-type split
 
 Retained because the measurements are sound and the `min`/`relax` comparison is still

@@ -112,9 +112,16 @@ def contact_energy_matrix(pose, sf_measure, background_weight=DEFAULT_BACKGROUND
     direct pair energy alone.
 
     The default departs from the paper deliberately. Eq. 2's background term is ~14x
-    larger than e_ij, and at w = 1 it swamps the contact: the index becomes 86% reducible
-    to a residue-level quantity and cannot report a frustrated contact at all. See
-    DEFAULT_BACKGROUND_WEIGHT in config.py and the sweep in docs/method.md.
+    larger than e_ij, and at w = 1 it swamps the contact: the index becomes ~75% reducible
+    to a residue-additive function and cannot report a frustrated contact at all (10
+    frustrated contacts in ubiquitin at w = 0, zero at w >= 0.1).
+
+    Note what does NOT justify this choice. Correlation with frustratometeR's mutational
+    mode RISES with w, +0.32 -> +0.54. But that gain is entirely one-body: residualising
+    c + a_i + a_j out of both sides leaves ~0 at every w. Higher w buys agreement only by
+    making the index as residue-additive as the reference already is. So frustratometeR
+    cannot adjudicate w, and w = 0 is chosen on internal grounds. See
+    DEFAULT_BACKGROUND_WEIGHT in config.py and the corrected sweep in docs/method.md.
     """
     e = pair_energy_matrix(pose, sf_measure)
     if background_weight == 0.0:
