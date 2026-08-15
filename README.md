@@ -11,10 +11,13 @@ coarse-grained one.
 See [`docs/method.md`](docs/method.md) for the method spec and
 [`CLAUDE.md`](CLAUDE.md) for how the repo is organised.
 
-**Status: early.** Full pipeline runs end to end. Cross-checked against frustratometeR
-(AWSEM) on 1UBQ: the two agree on direct contacts (Spearman +0.31, p < 10⁻⁴) and not on
-AWSEM's water-mediated contacts, where REF2015 has no explicit counterpart. Not yet
-validated against the paper itself — see `docs/method.md`.
+**Status: early, and not validated.** Full pipeline runs end to end. A cross-check
+against frustratometeR (AWSEM) on 1UBQ has been **withdrawn**: frustratometeR's
+configurational index turns out not to be a per-contact Z-score — it uses one global decoy
+mean/sd for the whole protein — so the two tools were never measuring comparable
+quantities. Put on the same footing the correlation is −0.03. This is not evidence against
+FrustX; it means the comparison that appeared to validate it does not. See
+`docs/method.md`, "The reference implementation".
 
 ## Setup on a new machine
 

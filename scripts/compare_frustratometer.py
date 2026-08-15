@@ -62,27 +62,45 @@ def spearman_p(rho, n):
     return front * (f - 1.0)
 
 
+def _canonical_pair(df):
+    """Order each contact as (chain, resnum)_i <= (chain, resnum)_j.
+
+    The join key must include the chain. Ordering on resnum alone would be wrong for
+    complexes -- residue 40 of chain A and residue 40 of chain B are different residues,
+    and two distinct contacts could collapse onto the same key. Harmless on the 1UBQ
+    single-chain validation, silently wrong on anything else, which is exactly the kind
+    of bug that surfaces as an unexplained low correlation.
+    """
+    key_i = list(zip(df["ci"], df["i"]))
+    key_j = list(zip(df["cj"], df["j"]))
+    swap = np.array([a > b for a, b in zip(key_i, key_j)])
+    out = df.copy()
+    out["ci"] = np.where(swap, df["cj"], df["ci"])
+    out["cj"] = np.where(swap, df["ci"], df["cj"])
+    out["i"] = np.where(swap, df["j"], df["i"])
+    out["j"] = np.where(swap, df["i"], df["j"])
+    return out
+
+
 def load_frustratometer(path):
     """Their per-contact table: whitespace-separated with a header line."""
     df = pd.read_csv(path, sep=r"\s+")
     df = df.rename(columns={"Res1": "i", "Res2": "j", "FrstIndex": "their_index",
-                            "FrstState": "their_class", "AA1": "aa1", "AA2": "aa2"})
-    # Normalise pair order so the join cannot miss on (i,j) vs (j,i).
-    lo = np.minimum(df["i"], df["j"])
-    hi = np.maximum(df["i"], df["j"])
-    df["i"], df["j"] = lo, hi
-    return df[["i", "j", "aa1", "aa2", "their_index", "their_class", "Welltype"]]
+                            "FrstState": "their_class", "AA1": "aa1", "AA2": "aa2",
+                            "ChainRes1": "ci", "ChainRes2": "cj"})
+    df = _canonical_pair(df)
+    return df[["ci", "i", "cj", "j", "aa1", "aa2",
+               "their_index", "their_class", "Welltype"]]
 
 
 def load_frustx(path):
     df = pd.read_csv(path)
     df = df.rename(columns={"resnum_i": "i", "resnum_j": "j",
+                            "chain_i": "ci", "chain_j": "cj",
                             "frustration_index": "our_index",
                             "frustration_class": "our_class"})
-    lo = np.minimum(df["i"], df["j"])
-    hi = np.maximum(df["i"], df["j"])
-    df["i"], df["j"] = lo, hi
-    return df[["i", "j", "resname_i", "resname_j", "our_index", "our_class",
+    df = _canonical_pair(df)
+    return df[["ci", "i", "cj", "j", "resname_i", "resname_j", "our_index", "our_class",
                "native_energy", "decoy_mean", "decoy_std"]]
 
 
@@ -93,7 +111,7 @@ def main(frustx_dir, frustra_file):
     print(f"FrustX contacts          : {len(ours)}")
     print(f"frustratometeR contacts  : {len(theirs)}")
 
-    merged = ours.merge(theirs, on=["i", "j"], how="inner")
+    merged = ours.merge(theirs, on=["ci", "i", "cj", "j"], how="inner")
     only_ours = len(ours) - len(merged)
     only_theirs = len(theirs) - len(merged)
     print(f"shared contacts          : {len(merged)}"
@@ -119,25 +137,37 @@ def main(frustx_dir, frustra_file):
     agree = (m["our_class"] == m["their_class"]).mean()
     print(f"\nexact agreement: {agree:.1%}")
 
-    # Correlation by AWSEM well type. This is the single most informative split we have:
-    # AWSEM's water-mediated well is an EXPLICIT desolvation term (depth modulated by
-    # local residue density, standing in for a bridging water), whereas REF2015 has no
-    # explicit water and handles desolvation implicitly via fa_sol. So the two functions
-    # are not approximating the same quantity on those pairs, and the aggregate
-    # correlation is a mixture of one subset that should agree and one that need not.
+    # Correlation by AWSEM well type.
+    #
+    # What Welltype actually means, from RenumFiles.pl:50-64 -- it is assigned purely by
+    # CB-CB distance and local density, NOT by which energy term fired:
+    #     r < 6.5 A                          -> "short"           (the direct well)
+    #     r >= 6.5 A, both densities < 2.6   -> "water-mediated"
+    #     r >= 6.5 A, otherwise              -> "long"            (protein-mediated)
+    # So "long" is NOT a direct contact: it sits in the same >=6.5 A mediated shell as
+    # water-mediated and differs only by local density. An earlier version of this script
+    # grouped short+long as "DIRECT", which was wrong. Only "short" is direct.
+    #
+    # Read these numbers with care. frustratometeR's configurational FrstIndex is an
+    # affine function of its NativeEnergy (one global decoy mean/sd for the whole
+    # protein -- fix_backbone.cpp:5095-5101), and over half its variance is a one-body
+    # burial term that FrustX excludes at w=0. Correlation within a well type is largely
+    # carried by that shared one-body component, not by contact physics. See
+    # docs/method.md, "The reference implementation".
     print("\n--- Spearman by AWSEM well type ---")
     for well, grp in m.groupby("Welltype"):
         if len(grp) > 5:
             r = spearman(grp["our_index"], grp["their_index"])
             print(f"  {well:<16} n={len(grp):<4} rho={r:+.3f}  p={spearman_p(r, len(grp)):.4f}")
 
-    direct = m[m["Welltype"] != "water-mediated"]
+    direct = m[m["Welltype"] == "short"]
     if len(direct) > 5 and len(direct) < len(m):
         r = spearman(direct["our_index"], direct["their_index"])
-        print(f"  {'DIRECT (short+long)':<16} n={len(direct):<4} rho={r:+.3f}  "
+        print(f"  {'DIRECT (short only)':<16} n={len(direct):<4} rho={r:+.3f}  "
               f"p={spearman_p(r, len(direct)):.4f}")
-        # Does our index rank THEIR classes correctly on the subset where both methods
-        # model the same physics? Positive separation = yes.
+        # Does our index rank THEIR classes correctly on the direct-well subset?
+        # Positive separation = yes. Note this is NOT evidence about pair physics on its
+        # own, for the one-body reason given above.
         hi = direct[direct["their_class"] == "highly"]["our_index"]
         lo = direct[direct["their_class"] == "minimally"]["our_index"]
         if len(hi) and len(lo):

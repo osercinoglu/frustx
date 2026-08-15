@@ -438,12 +438,158 @@ candidates, in the order worth testing:
    paper's premise is that atomistic resolution reveals what coarse-graining cannot. Low
    correlation is not by itself proof of a bug.
 
-> **All three were tested. See the next section** — candidates 1 and 2 are ruled out, and
-> the disagreement is localised to AWSEM's water-mediated contacts (candidate 3).
+> **All three were tested, and the conclusion drawn from those tests was wrong.** See the
+> next section: the comparison itself was not measuring what it appeared to measure,
+> because frustratometeR's configurational index is not a per-contact Z-score.
 
 ---
 
-# Resolution: the disagreement is concentrated in AWSEM's water-mediated contacts
+# The reference implementation: frustratometeR's configurational index is not a Z-score
+
+Everything in the two sections above compares our index against a quantity we had
+misidentified. This section records what frustratometeR actually computes, read from its
+source, and what that does to the comparison. It supersedes the water-mediated conclusion
+previously recorded here.
+
+## The decoy distribution is computed once per protein, not once per contact
+
+From the AWSEM source that builds the LAMMPS binary frustratometeR ships
+(`Scripts/lmp_serial_12_Linux`), with the authors' own comment:
+
+```c
+// the configurational decoy statistics only need to be computed once because they are
+// the same for every contact
+if (!strcmp(tert_frust_mode, "configurational")==0
+    || (strcmp(tert_frust_mode, "configurational")==0 && !already_computed_configurational_decoys)) {
+  compute_decoy_ixns(i_resno, j_resno, rij, rho_i, rho_j);
+}
+```
+
+`fix_backbone.cpp:5095-5101`; the flag is set at `:5341`. Provenance is not inferred — the
+shipped binary contains the symbol `already_computed_configurational_decoys`.
+
+This is directly visible in the reference output. All 389 contacts of 1UBQ carry an
+identical decoy mean and standard deviation:
+
+```
+$ awk 'NR>1{print $10,$11}' 1ubq_A.pdb_configurational | sort | uniq -c
+    389 -1.517 0.495
+```
+
+Therefore `FrstIndex = (−1.517 − E_native)/0.495`, an affine function of the native
+energy. Measured: **Spearman(FrstIndex, NativeEnergy) = −0.999998**, the residual being
+three-decimal rounding in the output file.
+
+**Their configurational index carries no per-contact decoy information.** It is the raw
+AWSEM contact energy, sign-flipped and rescaled by two constants.
+
+Two further properties of their decoy construction, for the record:
+
+- **No decoy structure is ever built.** `compute_decoy_ixns` (`fix_backbone.cpp:5249-5344`)
+  is a 1000-iteration loop of `rand()` draws into the *native* distance, density and
+  identity pools, followed by analytic lookups into the frozen `gamma.dat` /
+  `burial_gamma.dat` tables. No packer, no minimiser, no steric term, no coordinate write.
+  Confirmed independently against the shipped binary's disassembly.
+- **The draws are unseeded.** `rand` is imported; `srand` is not called anywhere. Their
+  reference numbers are bit-identical on every run, so all sampling noise in every
+  comparison in this document has been on the FrustX side.
+
+## Consequence: the headline correlation was never index-vs-index
+
+ρ = +0.141 compared *our* genuine per-contact Z-score against *their* raw energy. Putting
+both sides on the same footing — replacing our per-contact σ with one global (mean, sd),
+as theirs effectively is:
+
+```
+rho(our index,             their index) = +0.1407   p = 0.009
+rho(our index, GLOBALISED, their index) = −0.0303
+rho(our E0,                their E0   ) = −0.0303
+```
+
+**−0.030 is the commensurable number.** The +0.141 is an artifact of comparing objects of
+different kinds.
+
+One qualification, because the aggregate figure misleads in the other direction too:
+within a well type, globalising barely changes anything (`long` +0.346 → +0.384, `short`
++0.314 → +0.249). The aggregate collapse is a mixing effect across well types, not the
+denominator doing all the work.
+
+## Consequence: the numerators are different quantities, and this kills the water-mediated story
+
+frustratometeR's per-contact energy is `water_ij + burial_i + burial_j`
+(`fix_backbone.cpp:5459-5500`). Burial is a **one-body** quantity: it depends only on
+(residue identity, local density) and is therefore identical across every contact a given
+residue makes. FrustX's `E_ij` at `w = 0` is a bare two-body pair energy with all one-body
+terms excluded by construction (`frustx/energies.py:105-109`).
+
+Fitting `E ~ c + a_i + a_j` — the exact functional form of `burial_i + burial_j`:
+
+| | additive R² |
+|---|---|
+| frustratometeR E₀ | **0.560** |
+| FrustX e_ij (`w = 0`) | **0.133** |
+
+Over half their variance is one-body. Residualising that component out of **both** sides:
+
+| AWSEM well type | n | ρ(E₀, E₀) raw | ρ one-body removed |
+|---|---|---|---|
+| `long` | 71 | +0.382 | **−0.053** |
+| `short` | 115 | +0.249 | **+0.070** |
+| `water-mediated` | 158 | −0.053 | −0.064 |
+| all | 344 | −0.030 | −0.178 |
+
+**The direct-contact agreement was carried entirely by a shared one-body burial term.**
+Once it is removed, the two-body contact physics agrees at approximately zero in every
+well type, water-mediated included.
+
+This refutes the explanation previously recorded in this section. The well-type split is a
+real and reproducible observation, but "the disagreement is concentrated in water-mediated
+contacts" is false: the disagreement is everywhere, and direct contacts merely *looked*
+better because both models encode the same burial information. The previous subsection
+here was titled "Why this is the expected result, not a defect" — it assumed its
+conclusion and has been deleted.
+
+## Also not comparable: electrostatics
+
+`huckel_flag` initialises to `0` (`fix_backbone.cpp:122`) and is set only on an exact
+match against `"[DebyeHuckel]"` (`:467`). The shipped parameter file's section header is
+`[DebyeHuckel]-`, with a trailing dash — AWSEM's convention for a disabled section — so
+the match never fires. **The reference energy contains no electrostatic term at all**,
+while FrustX's `e_ij` includes `fa_elec`.
+
+## Status of the earlier candidate list
+
+- **Candidate 1, decoy locality — not ruled out.** The pair-local experiment moved ρ
+  negligibly (+0.265 vs +0.273) but nearly doubled the separation between the contacts
+  frustratometeR calls frustrated and those it calls minimally frustrated
+  (`scripts/local_decoy.py`). Given that their configurational σ is a single global
+  constant, ρ was never the statistic that could settle this. Reopened.
+- **Candidate 2, relaxation — still ruled out.** The matched `min`/`relax` runs below
+  remain valid; they are a FrustX-internal comparison and do not depend on what the
+  reference computes.
+- **Candidate 3, genuine method difference — untested.** It cannot be assessed until the
+  numerator mismatch is removed, because no frustratometeR mode has a bare-pair numerator
+  to compare against.
+
+## What is established, and what is not
+
+Established, from source and from data already in `results/validation/`: their
+configurational index is affine in their native energy; their decoys are analytic and
+structureless; the commensurable correlation is −0.030; the direct-contact agreement was
+a one-body artifact; their reference energy omits electrostatics.
+
+**Not** established: whether FrustX is correct. Nothing here is evidence either way. The
+comparison that was doing the validating has been withdrawn, not replaced. The next
+informative tests are frustratometeR's `mutational` mode — the only per-contact mode with
+a genuinely varying σ — and, independently, reproducing a specific published figure from
+Chen et al. (2020).
+
+---
+
+# Superseded: relaxation protocol and the well-type split
+
+Retained because the measurements are sound and the `min`/`relax` comparison is still
+load-bearing. The *interpretation* offered here is superseded by the section above.
 
 ## Experiment: relaxation protocol (candidate 2)
 
@@ -458,9 +604,12 @@ Two matched 500-decoy runs on the frustratometeR-prepared `1ubq_A.pdb`, `w = 0`,
 The two runs correlate with **each other** at ρ = +0.951 (n = 457 defined contacts).
 Side-chain relaxation of the decoys does not materially change the index.
 
-**Candidate 2 is ruled out.** With the contact-energy definition (the `w` sweep) and decoy
-locality (pair-local decoys, ρ +0.265 vs +0.273) already eliminated, no mechanical choice
-in our implementation accounts for the disagreement.
+**Candidate 2 is ruled out**, and this conclusion stands: it is a FrustX-internal
+comparison that does not depend on what frustratometeR computes. Side-chain relaxation of
+the decoys does not materially change the index.
+
+(The original text here also claimed decoy locality was "already eliminated" on the basis
+of ρ +0.265 vs +0.273. That claim is withdrawn — see the candidate-list status above.)
 
 ## Where the disagreement actually lives
 
@@ -482,28 +631,20 @@ Restricted to direct contacts, our index also separates *their* classes in the r
 direction: their `highly` contacts sit at our +0.16, their `minimally` at our +0.86
 (separation +0.70; +0.67 for `relax`).
 
-### Why this is the expected result, not a defect
+### Interpretation withdrawn
 
-AWSEM's water-mediated term is an **explicit** desolvation well: for pairs in the
-~6.5–9.5 Å shell its depth is modulated by local residue density, standing in for a
-bridging water molecule. REF2015 has no explicit water at all — desolvation enters
-implicitly through `fa_sol`. On those pairs the two functions are not approximating the
-same quantity, so there is no reason for their frustration indices to track.
+Two subsections stood here: "Why this is the expected result, not a defect", which argued
+that AWSEM's explicit water-mediated well and REF2015's implicit `fa_sol` are not
+approximating the same quantity, and an "honest statement" that treated the direct-contact
+ρ ≈ 0.31 as evidence the implementation is not fundamentally wrong.
 
-This is the paper's own premise stated quantitatively: atomistic resolution and
-coarse-grained resolution differ *specifically* where the coarse-grained model substitutes
-an effective term for atoms it does not represent.
+Both are withdrawn. The one-body residualisation above shows the direct-contact agreement
+was carried by a shared burial term rather than by contact physics, so ρ ≈ 0.31 was not
+evidence of anything about the pair interaction. The solvation argument may still be true,
+but nothing measured here tests it — the well-type split is fully explained by the
+one-body confound, and a real solvation difference would be invisible underneath it.
 
-### Honest statement of what is and is not established
-
-Agreement on the direct-contact subset (ρ ≈ 0.31, p < 10⁻⁴, consistent across two
-independent decoy protocols) is evidence the implementation is not fundamentally wrong.
-It is **not** proof of correctness: ρ = 0.31 leaves most of the variance unexplained, and
-low correlation is also what an undiscovered bug looks like. The only remaining test that
-can distinguish "correct but different" from "subtly wrong" is **reproducing a specific
-published figure from Chen et al. (2020)** against our own output. Until that is done,
-this section records a consistent hypothesis, not a validated one.
-
+The tables above remain accurate as measurements.
 ## Side finding: σ = 0 contacts at the cutoff edge
 
 17 of 475 contacts have `decoy_std == 0` and `native_energy == 0` — no REF2015 term fires

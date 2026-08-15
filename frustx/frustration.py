@@ -16,8 +16,13 @@ the field:
     near zero        ->  neutral
     negative F       ->  highly frustrated (native no better, or worse, than random)
 
-The contact energy E_ij comes from Eq. 2, which simplifies exactly to 1/2 (R_i + R_j).
-See docs/method.md for the derivation and its numerical verification.
+The contact energy E_ij is E_ij = e_ij + w * 1/2 (R_i + R_j), where w is
+DEFAULT_BACKGROUND_WEIGHT in config.py. At the default w = 0 this is just the bare
+pairwise energy e_ij; the many-body background is OFF. Eq. 2 as literally written is
+w = 1, which simplifies exactly to 1/2 (R_i + R_j) and makes the index degenerate --
+87% reducible to a residue-level quantity, with zero frustrated contacts on ubiquitin.
+That path is retained only so the sweep can be reproduced. See docs/method.md for the
+derivation, the numerical verification, and the w sweep.
 
 KNOWN ARTIFACT -- glycine positions.
 
