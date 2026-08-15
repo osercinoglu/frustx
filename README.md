@@ -22,8 +22,16 @@ withdrawn — that mode's decoy discards the contact's own geometry, so one deco
 covers the whole protein and its index is a rescaled energy rather than a per-contact
 Z-score. It is also the wrong mode to compare against: FrustX's decoy is a mutational one.
 
+Running AWSEM's own energy through FrustX's machinery separates the two things that
+differ (`frustx/awsem.py`, verified exact against frustratometeR's output to 1e-3):
+force field alone ρ = +0.18, protocol alone ρ = +0.27. The force field is the larger
+difference, and after removing one-body content it is the only comparison that stays
+positive.
+
 The deeper limitation: frustratometeR's indices are largely residue-additive (56%
-configurational, 95% mutational), while FrustX's is 23%. **frustratometeR cannot validate
+configurational, 95% mutational), while FrustX's is 23%. That 95% is a property of their
+*protocol*, not of AWSEM — the same energy through FrustX's protocol is only 39%
+additive. **frustratometeR cannot validate
 per-contact specificity, which is the property FrustX exists to provide.** Reproducing a
 figure from Chen et al. (2020) is the remaining test. See `docs/method.md`.
 

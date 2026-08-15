@@ -981,6 +981,116 @@ rise -- is the one-body component. The only nominally significant entry is w = 0
   against `configurational` mode and did not survive contact with a working target. Any
   future claim resting on that comparison should be treated as unsupported until rechecked.
 
+# Same equations, different force field: separating force field from protocol
+
+Every FrustX-vs-frustratometeR comparison so far changed two things at once — the energy
+function (REF2015 all-atom vs AWSEM coarse-grained) and the protocol (contact definition,
+decoy construction, what enters the numerator). Reimplementing AWSEM's energy and running
+*it* through FrustX's own machinery fills the missing cell of a 2x2 and separates them:
+
+| | FrustX protocol | frustratometeR protocol |
+|---|---|---|
+| **REF2015** | `frustx_min500` | infeasible |
+| **AWSEM** | `frustx_awsem` (new) | `frustra_mutational` |
+
+`frustx/awsem.py` transcribes `compute_water_energy` (`fix_backbone.cpp:5444`),
+`compute_burial_energy` (`:5478`), the gamma table layout (`:624-700`) and the CB-based
+distance (`:5558`). `scripts/awsem_frustration.py` runs it through FrustX's contact set,
+FrustX's whole-sequence shuffle decoys (literally `frustx.decoys.shuffle_sequence`, same
+seeds) and Eq. 1 with a per-contact σ. The pair energy used is the AWSEM *water* term
+alone, which is the right parallel to REF2015's pair energy under `w = 0`.
+
+## The energy function is verified exact; the density function is not
+
+Their `configurational` native energy is exactly `water(i,j) + burial_i + burial_j`
+(`fix_backbone.cpp:5210`), so our transcription can be checked contact by contact against
+their own output. On 1UBQ's 389 contacts, using their reported densities and our distances:
+
+**max |difference| = 1.1e-3, mean 3.0e-4, r = 0.99999977** — i.e. agreement to their
+output's three-decimal rounding. The energy function, the gamma tables, the residue-type
+ordering and the CB distances are all confirmed correct.
+
+**Our transcription of the density (`compute_ro`) does not reproduce theirs** and is not
+used. Their reported ρ runs 0.000–5.225 (mean 1.106); ours is systematically higher on
+helical residues, and no combination of well radii or sequence-separation exclusion we
+swept reproduces their values. Since ρ depends only on geometry, and geometry is fixed
+across the native and every decoy, `scripts/awsem_frustration.py` reads their reported
+densities instead. That is both safe and strictly more faithful than using a version we
+cannot verify — but it means the module cannot yet be run on a structure frustratometeR
+has not already processed. **Open item.**
+
+## Result: the force field is the larger difference, and the only one carrying signal
+
+344 contacts shared by all three, 500 decoys:
+
+| comparison | what differs | ρ |
+|---|---|---|
+| FrustX-REF2015 vs FrustX-AWSEM | force field only | **+0.175** (p = 0.001) |
+| FrustX-AWSEM vs frustratometeR | protocol only | **+0.270** (p = 4e-7) |
+| FrustX-REF2015 vs frustratometeR | both | +0.322 (p = 1e-9) |
+
+Holding the protocol *completely* fixed — same contacts, same decoys, same equation — and
+swapping only the energy function gives ρ = +0.175. The two force fields substantially
+disagree about which contacts are frustrated. Note also that neither single difference
+reaches the +0.322 obtained when both differ, so these do not compose additively and the
++0.322 should not be read as "two small problems stacking up".
+
+## The 95% one-body result is a protocol artifact, not an AWSEM property
+
+| index | additive R² |
+|---|---|
+| FrustX REF2015 | 0.234 |
+| **FrustX AWSEM** | **0.385** |
+| frustratometeR mutational | 0.954 |
+
+This is the most useful thing the experiment produced. AWSEM's energy run through FrustX's
+protocol is only 38.5% residue-additive — far from the 95.4% of frustratometeR's mutational
+index. **The near-total one-body character of their index is caused by their numerator
+summing over every contact of i and every contact of j (`fix_backbone.cpp:5214-5240`), not
+by anything in the AWSEM energy function.** AWSEM is a pair-specific energy; their
+mutational protocol is what discards the pair specificity.
+
+## With the one-body component removed
+
+Stripping the additive fit from all three indices and re-correlating the residuals — the
+control that killed the earlier water-mediated conclusion:
+
+| welltype | n | force field | protocol | both |
+|---|---|---|---|---|
+| ALL | 344 | **+0.122** | −0.575 | −0.138 |
+| short (direct, r < 6.5 Å) | 115 | +0.188 | −0.410 | −0.221 |
+| long (protein-mediated) | 71 | +0.190 | −0.802 | −0.035 |
+| water-mediated | 158 | +0.039 | −0.522 | −0.104 |
+
+Two things follow.
+
+**The force-field comparison is the only one that survives the control.** REF2015 and AWSEM
+retain a small positive pair-level agreement (+0.122 overall, ~+0.19 on direct and
+protein-mediated contacts) after all one-body content is removed. It is weak, but it is
+real and it is positive.
+
+**The protocol comparison inverts.** Same energy function, different protocol, and the
+residuals anti-correlate at −0.575. Their mutational index has only 4.6% non-additive
+variance to begin with, and what remains does not merely fail to track genuine pair
+frustration — it runs against it. Caveat: this is a correlation computed on the small
+residual of a mostly-additive quantity, so its magnitude should not be over-read; the sign
+and its consistency across all three well types are the durable part.
+
+**Water-mediated contacts, properly controlled.** With protocol held fixed and one-body
+content removed, the two force fields agree at +0.039 on water-mediated contacts against
+~+0.19 on direct and protein-mediated ones. The original intuition — that AWSEM's explicit
+desolvation well and REF2015's implicit `fa_sol` are modelling different physics — is
+supported here, in the controlled form the earlier withdrawn version lacked.
+
+## What this means for FrustX
+
+The disagreement with frustratometeR is now decomposed and largely explained. FrustX's index
+is the least one-body of the three (R² 0.234), the force-field difference is real and
+measured, and the residual disagreement with frustratometeR is traceable to a protocol that
+discards pair specificity. **None of this validates FrustX's per-contact resolution** — a
+weak positive agreement with a coarse-grained model is consistent with FrustX being right,
+being wrong, or both being wrong. That still needs Chen et al.
+
 # Superseded: relaxation protocol and the well-type split
 
 Retained because the measurements are sound and the `min`/`relax` comparison is still
