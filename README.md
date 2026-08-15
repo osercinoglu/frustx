@@ -11,13 +11,17 @@ coarse-grained one.
 See [`docs/method.md`](docs/method.md) for the method spec and
 [`CLAUDE.md`](CLAUDE.md) for how the repo is organised.
 
-**Status: early, and not validated.** Full pipeline runs end to end. A cross-check
-against frustratometeR (AWSEM) on 1UBQ has been **withdrawn**: frustratometeR's
-configurational index turns out not to be a per-contact Z-score — it uses one global decoy
-mean/sd for the whole protein — so the two tools were never measuring comparable
-quantities. Put on the same footing the correlation is −0.03. This is not evidence against
-FrustX; it means the comparison that appeared to validate it does not. See
-`docs/method.md`, "The reference implementation".
+**Status: early, not yet validated per-contact.** Full pipeline runs end to end.
+Against frustratometeR (AWSEM) on 1UBQ: residue-level agreement is ρ = +0.41 (p = 2e-4,
+n = 76) vs `singleresidue` mode, and per-contact ρ = +0.32 (p = 1e-9, n = 344) vs
+`mutational` mode. The per-contact comparison against `configurational` mode has been
+withdrawn — that mode uses one global decoy mean/sd for the whole protein, so its index is
+not a per-contact Z-score.
+
+The deeper limitation: frustratometeR's indices are largely residue-additive (56%
+configurational, 95% mutational), while FrustX's is 23%. **frustratometeR cannot validate
+per-contact specificity, which is the property FrustX exists to provide.** Reproducing a
+figure from Chen et al. (2020) is the remaining test. See `docs/method.md`.
 
 ## Setup on a new machine
 

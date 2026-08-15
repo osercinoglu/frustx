@@ -586,6 +586,116 @@ Chen et al. (2020).
 
 ---
 
+
+---
+
+# E3/E4: the other frustratometeR modes, and what they reveal
+
+Run after the section above, with predictions registered in advance. **The E3 prediction
+was wrong**, and the way it was wrong is the most informative result so far.
+
+Reproduce with:
+
+```bash
+Rscript -e "library(frustratometeR); calculate_frustration(
+  PdbFile='/workspaces/frustx/results/validation/1ubq.pdb', Chain='A',
+  Mode='mutational', Graphics=FALSE, Visualization=FALSE,
+  ResultsDir='/workspaces/frustx/results/validation/frustra_mutational/')"
+```
+
+`ResultsDir` must be **absolute**: `calculate_frustration` does `setwd(JobDir)` at
+`calculate_frustration.R:64` and then keeps using the caller's relative path, which no
+longer resolves. Fails with "cannot open the connection" on a relative path.
+
+## E3: mutational mode has a real per-contact sigma, and correlates twice as well
+
+Unlike configurational, mutational does not hit the compute-once short-circuit. All 389
+contacts get distinct decoy statistics (389 unique `(DecoyEnergy, SDEnergy)` pairs, sigma
+from 0.500 to 8.203), and `rho(FrstIndex, NativeEnergy) = -0.88` rather than -1.0.
+
+| target | n | rho | p |
+|---|---|---|---|
+| configurational | 344 | +0.141 | 0.009 |
+| **mutational** | 344 | **+0.322** | **1e-9** |
+
+Per well type, and this is the part that matters:
+
+| well type | n | vs configurational | vs mutational |
+|---|---|---|---|
+| `short` (direct) | 115 | +0.314 | +0.397 |
+| `long` (protein-mediated) | 71 | +0.346 | +0.346 |
+| `water-mediated` | 158 | **-0.030** (p 0.71) | **+0.223** (p 0.005) |
+
+**The water-mediated non-correlation was an artifact of the constant sigma, not physics.**
+Against a target with a real per-contact denominator it is positive and significant. The
+prediction registered before this run was "rho stays below +0.20"; the actual +0.322 is
+outside that, so candidate 1 (decoy locality / decoy construction) is not merely reopened,
+it is implicated.
+
+### But the improvement is not coming from their sigma
+
+| decomposition | rho |
+|---|---|
+| our index vs their index (full Z vs full Z) | +0.322 |
+| our index vs their index **globalised** (their sigma removed) | +0.314 |
+| our index **globalised** vs their index (our sigma removed) | +0.176 |
+| our E0 vs their E0 (numerators only) | +0.222 |
+
+Removing *their* per-contact sigma costs almost nothing (+0.322 -> +0.314). Removing
+*ours* costs half of it. So mutational's advantage over configurational is in the
+**numerator** -- their mutational E0 sums every (i,k) and (j,k) contact of both partners --
+not in the fact that its sigma varies.
+
+## E4: residue level against singleresidue mode
+
+Prediction registered: rho >= +0.40. Confirmed.
+
+FrustX `mean_frustration` per residue vs frustratometeR `singleresidue` `FrstIndex`:
+**rho = +0.412, p = 0.0002, n = 76.** Note the singleresidue output has no `FrstState`
+column, so classification cannot be compared -- only rank.
+
+## The result that reframes everything: how one-body is each index?
+
+Fitting each quantity to `X ~ c + a_i + a_j`, the exact functional form of a sum of two
+residue-level terms. High R^2 means the "contact" index is really a residue property.
+
+| quantity | additive R² |
+|---|---|
+| **FrustX e_ij (numerator, w=0)** | **0.133** |
+| **FrustX index (w=0)** | **0.234** |
+| frustratometeR configurational E0 | 0.560 |
+| frustratometeR configurational index | 0.561 |
+| frustratometeR mutational E0 | 0.994 |
+| frustratometeR mutational index | 0.954 |
+
+**FrustX at w = 0 is by a wide margin the most pair-specific of the three indices.**
+frustratometeR's mutational index is 95% reducible to a residue-additive function -- it is
+a residue-level measure reported per contact. Its numerator is essentially `R_i + R_j`,
+which is the `w = 1` form this project rejected precisely because it made the FrustX index
+degenerate.
+
+So the higher correlation with mutational is largely agreement on **residue-level burial
+structure**, not on contact physics. That is consistent with E4: the residue-level
+comparison (+0.412) is stronger than any per-contact comparison.
+
+### What this means for validation strategy
+
+Neither frustratometeR mode supplies a strongly pair-specific target on 1UBQ:
+configurational is 56% one-body, mutational 95%. Per-contact rank agreement against either
+is therefore bounded by how much contact-specific information the reference contains, which
+is not much. **frustratometeR cannot validate the one property FrustX was built to
+provide.** This is a limit of the comparison, not a defect in either tool, and it means:
+
+- Residue-level agreement (rho +0.41 vs singleresidue) is the defensible cross-check, and
+  should be reported as the headline instead of any per-contact number.
+- Per-contact validation requires a target with genuine pair specificity -- i.e.
+  reproducing a specific figure from Chen et al. (2020). That is now the only remaining
+  test, and it is no longer optional.
+- The earlier `w` sweep should be read in this light. It rejected `w = 1` for producing a
+  degenerate, residue-reducible index. frustratometeR's mutational mode *is* that
+  degenerate index, and it is the published reference. That is worth understanding before
+  concluding the sweep settled the question.
+
 # Superseded: relaxation protocol and the well-type split
 
 Retained because the measurements are sound and the `min`/`relax` comparison is still
