@@ -108,13 +108,21 @@ def contact_energy_matrix(pose, sf_measure, background_weight=DEFAULT_BACKGROUND
         E_ij = e_ij + w * 1/2 (R_i + R_j)
 
     where e_ij is the direct pair interaction and R_i is residue i's total pairwise
-    interaction energy. w = 1 recovers Eq. 2 of the paper; w = 0 (the default) uses the
-    direct pair energy alone.
+    interaction energy. w = 0 (the default) uses the direct pair energy alone.
+
+    w = 1 APPROXIMATES Eq. 2 of the paper -- it does not equal it. Eq. 2's k!=j / l!=i
+    exclusions make the direct term cancel, leaving exactly 1/2(R_i + R_j); this form
+    keeps e_ij on top and so overshoots by e_ij (~0.7 REU against a ~10 REU background,
+    so no conclusion turns on it). scripts/eq2_literal.py uses the exact parameterisation
+    (1-w)*e_ij + w*1/2(R_i+R_j) when the endpoint has to be Eq. 2 verbatim.
 
     The default departs from the paper deliberately. Eq. 2's background term is ~14x
     larger than e_ij, and at w = 1 it swamps the contact: the index becomes ~75% reducible
     to a residue-additive function and cannot report a frustrated contact at all (10
-    frustrated contacts in ubiquitin at w = 0, zero at w >= 0.1).
+    frustrated contacts in ubiquitin at w = 0, zero at w >= 0.1). The reason is a one-body
+    tautology, not a tuning problem: shuffling a real sequence degrades it globally, so
+    1/2(R_i + R_j) makes the numerator positive at 99.6% of contacts regardless of local
+    frustration. See "The literal Eq. 2 experiment" in docs/method.md.
 
     Note what does NOT justify this choice. Correlation with frustratometeR's mutational
     mode RISES with w, +0.32 -> +0.54. But that gain is entirely one-body: residualising

@@ -1144,6 +1144,61 @@ cannot validate a property it does not have. The `w = 0` choice must stand or fa
 internal grounds, as already recorded — this closes the door on external adjudication of it
 from the paper as well as from frustratometeR.
 
+## The literal Eq. 2 experiment: it is the paper's Methods, not our code
+
+The open question was whether FrustX reporting **zero** highly frustrated contacts at
+`w = 1` — while the paper's entire Results rest on highly frustrated clusters existing —
+came from our arithmetic, our `e_ij` extraction, or the paper's Methods. `scripts/eq2_literal.py`
+answers it from the retained decoy tensor (1UBQ, 200 decoys, `min` protocol, 475 contacts).
+No new Rosetta run: every `w` shares identical decoys, so no difference below is decoy noise.
+
+Note the parameterisation. `frustration.contact_energy_matrix` computes `e_ij + w·½(R_i+R_j)`,
+which keeps `e_ij` on top and so overshoots the literal Eq. 2 by exactly `e_ij` at `w = 1`.
+The script uses `E_ij(w) = (1-w)·e_ij + w·½(R_i+R_j)` instead, so that `w = 1` **is** Eq. 2
+verbatim rather than approximately. This changes no conclusion (the two differ by ~0.7 REU
+against a ~10 REU background) but it means the endpoint is the thing it claims to be.
+
+**Not our arithmetic.** Eq. 2 written out term by term with the `k≠j` / `l≠i` exclusions
+spelled out, versus `½(R_i+R_j)`: max abs diff **7.1e-15**. The collapse is exact.
+
+**Not our `e_ij` extraction.** On contacts, mean `|e_ij|` = **0.663 REU** against mean
+`|½(R_i+R_j)|` = **10.03 REU** — the background is **15.1×** the direct term, reproducing the
+~14× recorded in `config.py`. (Use the *mean*: 42% of contacts sit near the 10 Å cutoff with
+`|e_ij| < 0.05 REU`, so the median describes the cutoff edge and inflates the ratio to 68×.)
+
+**It is the Methods.** The sweep:
+
+| w | min F | median F | max F | med numerator | med σ | #high | #min | numerator > 0 |
+|---|---|---|---|---|---|---|---|---|
+| 0.00 | −2.97 | −0.03 | 6.54 | −0.00 | 0.21 | **10** | 78 | 45.5% |
+| 0.10 | −0.73 | 0.56 | 4.66 | 0.75 | 1.55 | 0 | 132 | 96.0% |
+| 0.25 | −0.36 | 0.57 | 3.40 | 1.87 | 3.67 | 0 | 112 | 98.1% |
+| 0.50 | −0.18 | 0.55 | 2.94 | 3.62 | 7.33 | 0 | 104 | 99.2% |
+| 1.00 | −0.18 | 0.54 | 2.94 | 7.17 | 14.54 | 0 | 94 | **99.6%** |
+
+The frustrated tail is not compressed away by an inflated σ — numerator and σ grow together,
+leaving the median index almost constant (0.56 → 0.54). It dies because **the numerator turns
+uniformly positive**: 45.5% of contacts at `w = 0`, **99.6%** at `w = 1`.
+
+The mechanism is a one-body tautology. At `w = 1` the contact energy depends on `i` and `j`
+only through their own totals `R`. Shuffling the sequence of a real protein degrades it
+globally — native `Σ R_i` = **−661 REU** against **−106 REU** for the decoy mean, and **72 of
+76** residues have `R_i` better than the decoy mean. Every contact inherits that 555 REU gap
+through `½(R_i+R_j)`, whether or not it is locally frustrated. So Eq. 2 as written measures
+*"is this a well-optimised sequence"*, which is true almost everywhere by construction, and
+it cannot report a frustrated contact for reasons that have nothing to do with the structure.
+
+The collapse is immediate, not gradual: **`w = 0.1` already gives zero frustrated contacts**,
+because the background is 15× the direct term the moment it is admitted at all.
+
+**Conclusion.** Eq. 2 as literally published cannot reproduce the paper's own qualitative
+result. This is not a defect we introduced, and it is not fixable by tuning `w` — any `w > 0`
+destroys the frustrated tail. It independently confirms `DEFAULT_BACKGROUND_WEIGHT = 0.0` on
+grounds stronger than the earlier additive-R² argument: at `w = 1` the index is not merely
+75% one-body, it is *incapable of the paper's central claim*. Either the paper's implementation
+differs from its Eq. 2, or its `e_ij` is not a pairwise decomposition of the kind REF2015 gives.
+We cannot distinguish these — no code accompanies the paper.
+
 ## The one quantitative non-drug target that does exist
 
 Fig. 2's right column: "a quantification of the minimally frustrated interactions (green)
