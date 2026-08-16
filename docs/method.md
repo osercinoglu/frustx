@@ -1272,6 +1272,90 @@ cannot pass unnoticed.
 Retained because the measurements are sound and the `min`/`relax` comparison is still
 load-bearing. The *interpretation* offered here is superseded by the section above.
 
+## Result: Rheb GDP vs GTP, the first reproduction attempt at Fig. 2's level
+
+1XTQ (Rheb·GDP, inactive) and 1XTS (Rheb·GTP, active), protein-only, REF2015, `w = 0`,
+500 `min` decoys each, XAdens 5 Å vicinity on CB midpoints. Figure:
+`results/fig2/rheb_profile.png`; per-residue table `results/fig2/rheb_profile_comparison.csv`.
+
+| | contacts | σ=0 dropped | highly | minimally | median F |
+|---|---|---|---|---|---|
+| 1XTQ (GDP) | 1306 | 42 | 31 | 181 | −0.06 |
+| 1XTS (GTP) | 1305 | 32 | 34 | 185 | −0.06 |
+
+Global profiles are highly similar (`Total` r = 0.964, `nMinimallyFrst` r = 0.809), as they
+must be for two conformers of one protein — so the question is entirely about *where* they
+differ.
+
+### The change concentrates on the functional elements
+
+Taking the P-loop (12–20), switch I (32–41) and switch II (63–79) from small-GTPase biology,
+**a priori**, not chosen after looking:
+
+| region | n | mean Δ highly | mean Δ minimally |
+|---|---|---|---|
+| P-loop | 9 | +0.56 | −0.22 |
+| switch I | 10 | +0.30 | −1.20 |
+| switch II | 17 | +0.65 | −1.29 |
+| **elsewhere** | 133 | **−0.11** | **+0.30** |
+
+All three functional elements move the same way on activation — *more* highly frustrated,
+*less* minimally frustrated — while the rest of the protein moves the opposite way.
+
+### Controls
+
+**Decoy noise floor, measured not assumed.** Splitting each structure's own 500 decoys into
+halves and profiling each gives a within-structure difference of pure sampling origin. The
+measured floor compares two 250-decoy estimates while the real comparison is two 500-decoy
+estimates, so it overstates the relevant noise by √2 and is corrected:
+
+| | between-structure signal | corrected noise floor | ratio |
+|---|---|---|---|
+| Δ highly | 0.550 | 0.152 | **3.6×** |
+| Δ minimally | 1.408 | 0.341 | **4.1×** |
+
+**Spatial null.** Region means were tested against randomly placed *contiguous blocks* of the
+same lengths, not permuted residue labels — the profile is spatially autocorrelated, and
+label permutation would destroy that and understate the null. Individually only switch II
+reaches nominal significance (Δ minimally, p = 0.033), which does not survive correction for
+6 tests. The **joint** a-priori contrast (all 36 functional residues vs the other 133,
+three random blocks of matched size, 20 000 draws) does:
+
+| | contrast | null sd | p | Bonferroni (2 metrics) |
+|---|---|---|---|---|
+| Δ highly | +0.63 | 0.31 | 0.044 | 0.088 |
+| Δ minimally | **−1.30** | 0.52 | **0.010** | **0.020** |
+
+### It is not a restatement of geometry, but it cannot be separated from it either
+
+CA RMSD after superposition is 0.86 Å overall, and localises exactly where expected:
+switch I **2.18 Å** (max 4.51), switch II 1.35 Å, elsewhere 0.59 Å, P-loop only 0.33 Å.
+
+Per-residue structural deviation explains almost none of the frustration change globally —
+Spearman ρ = +0.07 (Δ highly) and +0.02 (Δ minimally), regression R² = 0.036 and 0.059. So
+the profile is **not** re-reporting RMSD in different units.
+
+But adjusting for deviation drops the joint contrast to p = 0.149 / 0.123. Read this
+carefully: deviation is collinear with region membership (both concentrate on the switches),
+so the adjustment partly removes the thing being tested — it over-controls rather than
+refutes. The defensible statement is the weaker pair: **the functional elements do show a
+frustration shift on activation (p = 0.010), and that shift is not explained by local
+structural change globally — but "frustration changes *beyond* the conformational change" is
+not established by this data.**
+
+### Limits that remain
+
+- **Absolute counts are not comparable to the published figure.** Chen et al. state neither
+  their thresholds nor their radius; ours are frustratometeR's, and `−1.0` is on record here
+  as unsupported for REF2015. Only shape is comparable.
+- **The two crystal structures differ in quality**: 1XTQ at 2.00 Å (R 0.219), 1XTS at 2.80 Å
+  (R 0.231). Some of the difference may be crystallographic rather than conformational. A
+  same-structure control cannot rule this out; only a second conformer pair can.
+- **"Local Qi"**, the black trace in the published figure, is not reproduced — the paper
+  never defines it.
+- This validates *spatial localisation at residue resolution*. It says nothing about any
+  individual contact's Z-score, which remains unvalidatable from this paper.
+
 ## Experiment: relaxation protocol (candidate 2)
 
 Two matched 500-decoy runs on the frustratometeR-prepared `1ubq_A.pdb`, `w = 0`,
