@@ -1115,12 +1115,99 @@ statistic. The only quantitative panels in the paper are 5e and 6d, and both are
 work, which is out of scope here.
 
 The main-text scalars in the non-drug half are 14.2% (atomistic) vs 26.0% (AWSEM)
-minimally frustrated interface contacts, over an undisclosed protein-assembly database,
-with the interface-contact definition in a supplementary PDF.
+minimally frustrated interface contacts, pooled over Fig. 4's seven complexes. These are
+real quantitative non-drug numbers and the section below works through what can be done
+with them; do not read the per-contact conclusion here as covering them.
 
 **Consequence: "validate FrustX per-contact against Chen et al." is not achievable.** This
 is a closed question, not an outstanding task. Nothing downstream should be written as if
 the check is merely pending.
+
+## Category ratios: what the paper reports, and what of it we can test
+
+Aggregate class fractions are a different question from per-contact values, and here the
+paper is not silent. It publishes exactly three numbers, all in the Fig. 4 / Supplementary
+Fig. 8 interface analysis:
+
+| quantity | value |
+|---|---|
+| interface contacts minimally frustrated, **atomistic** | **14.2%** |
+| interface contacts minimally frustrated, **AWSEM** | **26.0%** |
+| water-mediated interactions minimally frustrated, AWSEM | ~24% |
+
+plus two comparative claims carrying no number:
+
+> "short-range and long-range contacts that are not water-mediated do display **similar
+> fractions** of minimally frustrating interactions in both frustratometers"
+
+> "the atomistic frustratometer shows only a **much lower fraction** of minimally frustrated
+> water-mediated interactions and a **higher level of high frustration** in the
+> water-mediated contacts than does the AWSEM"
+
+### 14.2% / 26.0% cannot be reproduced — the systems are unnamed
+
+These are pooled over Fig. 4's seven complexes. The Fig. 4 caption gives **no PDB IDs**, and
+the only complex named anywhere in the main text is **2PCC** (a "wet" interface, panel f or
+g). The remaining six are identified only inside the figure image or Supplementary Fig. 8.
+Without them there is no denominator to match, and a single complex cannot stand in for a
+pooled fraction over seven.
+
+### The two unnumbered claims are testable, and we hold the data
+
+`scripts/category_ratios.py`, on 1UBQ, over the **344 contacts all three calculations share**
+(joined on contact identity so the welltype label and the denominator are identical
+throughout). Welltype comes from frustratometeR, the only source that assigns it.
+
+| welltype | n | calculation | minimally % | neutral % | highly % |
+|---|---|---|---|---|---|
+| short | 115 | frustratometeR / AWSEM | 34.8 | 56.5 | 8.7 |
+| | | FrustX / REF2015 | 29.6 | 67.0 | 3.5 |
+| | | FrustX / AWSEM | 24.3 | 63.5 | 12.2 |
+| long | 71 | frustratometeR / AWSEM | **67.6** | 31.0 | 1.4 |
+| | | FrustX / REF2015 | **23.9** | 73.2 | 2.8 |
+| | | FrustX / AWSEM | 25.4 | 73.2 | 1.4 |
+| water-mediated | 158 | frustratometeR / AWSEM | 33.5 | 55.1 | 11.4 |
+| | | FrustX / REF2015 | 17.7 | 79.7 | 2.5 |
+| | | FrustX / AWSEM | 18.4 | 71.5 | 10.1 |
+
+**Claim 1 — "similar fractions for non-water-mediated" — half holds.** Short-range: 34.8%
+vs 29.6%, similar. Long-range: **67.6% vs 23.9%**, a 44-point gap. On this monomer the claim
+fails badly for exactly one of the two welltypes it asserts.
+
+**Claim 2 — first half reproduces, second half is contradicted.** Atomistic water-mediated
+minimal frustration *is* much lower (17.7% vs 33.5%) — the paper's central observation about
+Rosetta lacking explicit waters comes out of an independent implementation. But the
+"higher level of high frustration" does not: we get **2.5% against AWSEM's 11.4%**, the
+opposite direction.
+
+**That contradiction is confounded and should not be reported as a refutation.** The `−1.0`
+cut point is AWSEM-calibrated and is already on record here as unsupported for REF2015 (only
+10 contacts in 1UBQ reach it, and the empirical tail is non-monotonic). Every "highly %"
+column is therefore dominated by a threshold we know does not transfer, whereas `+0.78` is
+supported and the "minimally %" columns are informative. Note FrustX/AWSEM recovers 10.1%
+against frustratometeR's 11.4% on the same contacts, which places the discrepancy in the
+force field, not in our protocol or arithmetic.
+
+### The paper inherits the same thresholds we did
+
+Searched directly: `0.78`, "threshold", and every phrasing of a cut point appear **nowhere**
+in the paper. The classification is introduced only as "as discussed in Ferreiro et al. 4,
+the individual contacts can be roughly classified as being either minimally frustrated,
+highly frustrated, or neutrally frustrated" — i.e. the AWSEM-calibrated values, adopted for
+an atomistic index without recalibration, exactly as FrustX does. This is inference from a
+citation rather than a stated method, but it means 14.2% was very likely computed with the
+same `+0.78` we use, so the number is comparable *in construction* even though it is not
+reproducible for want of the systems.
+
+### Side finding: the paper does work at 5 Å from the Cα
+
+Recorded because it bears on the vicinity choice above. The Fig. 2 caption never defines
+"vicinity", but the Results say of a different analysis: *"The regions with mobile residues
+are enriched in highly frustrated interactions **up to 5 Å from the Cα** of the mobile
+residues"* (Supplementary Fig. 3). That is not the Fig. 2 quantity and does not define it,
+but it is direct evidence that the paper's own spatial analyses use a 5 Å radius measured
+from Cα — which is what `XAdens` does. It strengthens, without settling, the choice made in
+`scripts/vicinity_profile.py`.
 
 ## The deeper reason it was never coherent
 
@@ -1199,7 +1286,7 @@ grounds stronger than the earlier additive-R² argument: at `w = 1` the index is
 differs from its Eq. 2, or its `e_ij` is not a pairwise decomposition of the kind REF2015 gives.
 We cannot distinguish these — no code accompanies the paper.
 
-## The one quantitative non-drug target that does exist
+## The quantitative non-drug target that is actually runnable
 
 Fig. 2's right column: "a quantification of the minimally frustrated interactions (green)
 or highly frustrated interactions (red) **in the vicinity of each residue**" for the pairs
