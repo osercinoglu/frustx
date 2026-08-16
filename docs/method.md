@@ -1211,16 +1211,50 @@ contact's Z-score.
 
 Two limits, both from the text itself:
 
-- **"Vicinity" is never defined.** The word appears exactly once in the paper, in this
+- **"Vicinity" is never defined *by the paper*.** The word appears exactly once, in this
   caption. "Local Qi" likewise. There is no radius, in the caption, the Results, or the
-  Methods. Any reproduction must expose the radius as a parameter and can only compare
-  profile *shape*, never absolute counts.
+  Methods. **This limit is now largely lifted** — see the next section: frustratometeR's
+  `XAdens` computes exactly the quantity the caption describes, and we reproduce its
+  output bit-for-bit, so we can adopt a *verified* reference definition instead of
+  inventing one. What remains unproven is that Chen et al. used that same definition.
 - **The counts depend on the classification thresholds**, which the paper does not state
   either, and which we have already shown are only half-supported for REF2015 (`+0.78`
   supported, `−1.0` not).
 
 Smallest candidate: **1XTQ / 1XTS** (human Rheb·GDP / Rheb·GTP), 169 and 171 residues,
 single chain, no numbering breaks.
+
+## "Vicinity" recovered: XAdens, verified bit-for-bit
+
+`frustratometeR:::XAdens` (dumped from the installed package; not exported, and not
+documented in the paper either) generates the `*_5adens` files, and computes precisely the
+Fig. 2 caption's quantity. The rule:
+
+- each **contact** is given a position — the **midpoint of its two interacting atoms**
+- for each residue `i`, count contacts whose midpoint lies within `radius` of `i`'s **CA**
+- strictly `< radius`, default **5 Å** (the R code uses `<`, not `<=`)
+- split at the usual cut points: highly `≤ −1`, minimally `≥ 0.78`
+
+**This is not "the contacts involving residue `i`".** It is a spatial density of contact
+midpoints near `i`, so a residue accumulates contacts it takes no part in. That is exactly
+what "in the vicinity of" buys over "of", and reading it the other way would change the
+profile shape — the only thing Fig. 2 lets us compare.
+
+Verified, not assumed. `scripts/vicinity_profile.py` reproduces frustratometeR's own 1UBQ
+`_mutational_5adens` file **exactly**: 76/76 residues matching on `Total`, `nHighlyFrst`,
+`nNeutrallyFrst` and `nMinimallyFrst`, max abs diff **0**.
+
+The coordinate convention was settled by the same test rather than by preference:
+
+| midpoint atoms | residues matching on all four counts | max abs diff in `Total` |
+|---|---|---|
+| **CB** (CA for Gly) | **76 / 76** | **0** |
+| CA | 10 / 76 | 9 |
+
+CB wins decisively, which is what AWSEM's contact definition implies. It stays a parameter
+(`atom=`) all the same: this pins down *frustratometeR's* definition, not Chen et al.'s,
+which remains unstated. FrustX defines contacts by CA–CA distance, so the two conventions
+are genuinely different choices and the difference is not negligible.
 
 ## Blocker: heteroatoms crash the contact map
 
