@@ -199,6 +199,90 @@ def apply_readout(E, mask, readout=DEFAULT_READOUT):
     return row[:, None] + row[None, :] - (E * mask)
 
 
+# --- Parallel decoy generation ------------------------------------------------------
+#
+# Module-level, because a fork Pool needs the worker function importable and the heavy
+# objects (pose, score functions) inherited rather than pickled. ScoreFunction is NOT
+# picklable at all, so fork is mandatory here -- spawn cannot work without rebuilding
+# them, and the default start method is not guaranteed to stay fork.
+_WORKER = {}
+
+
+def _worker_init(jran_base, counter):
+    """Give this worker its own Rosetta RNG stream.
+
+    MUST call pyrosetta.init directly. energies.init_rosetta() is USELESS here: its
+    module-level _INITIALISED guard (frustx/energies.py:39,49) is inherited as True
+    across the fork, so the call silently no-ops and every worker keeps the parent's
+    RNG state. The symptom is not an error -- it is correlated packings across workers
+    and a quietly understated sigma. Verified: forked children without a real re-init
+    all return bit-identical decoy energies.
+
+    The id comes from a shared counter rather than os.getpid() so the streams are a
+    contiguous, reproducible set, and per WORKER rather than per task -- reseeding per
+    task would reset the stream repeatedly and reintroduce correlation in another guise.
+    """
+    import pyrosetta
+    with counter.get_lock():
+        wid = counter.value
+        counter.value += 1
+    pyrosetta.init(
+        f"-mute all -ignore_unrecognized_res -constant_seed -jran {jran_base + wid}",
+        silent=True,
+    )
+
+
+def _seed_packer(packing_seed, k):
+    """Pin the global RNG so decoy k packs identically wherever it is built.
+
+    Optional and OFF by default. When set, decoy k is a pure function of
+    (packing_seed, k): identical across worker counts, arrival order and resume points,
+    which is what makes serial and parallel runs comparable bit-for-bit.
+
+    Deliberately NOT inside decoys.make_decoy. scripts/packer_noise.py measures packer
+    stochasticity by rebuilding one sequence repeatedly; seeding inside make_decoy would
+    force that measurement to read exactly zero and silently invalidate it.
+    """
+    if packing_seed is None:
+        return
+    from pyrosetta.rosetta.numeric.random import rg
+    rg().set_seed(packing_seed + k)
+
+
+# Offsets into the packing_seed stream. The native gets 0 and decoy k gets 1 + k, so a
+# decoy can never be handed the native's stream.
+_NATIVE_OFFSET = 0
+_DECOY_OFFSET = 1
+
+
+def _check_accounting(seen, n_decoys):
+    """Every decoy contributed exactly once, or raise.
+
+    Integrity, not statistics. compute_frustration divides by n_decoys regardless of how
+    many contributions actually arrived, so one lost decoy of 500 shifts the mean by 0.2%
+    and a lost chunk of 8 corrupts sigma -- both invisible in the output. Silently
+    renormalising on a short count would turn a bug into a quietly degraded run, so this
+    raises instead.
+    """
+    if sorted(seen) != list(range(n_decoys)):
+        raise RuntimeError(
+            f"decoy accounting failed: {len(seen)} results, {len(set(seen))} distinct, "
+            f"for {n_decoys} decoys"
+        )
+
+
+def _worker_decoy(k):
+    """Build decoy k and return its readout matrix. Runs in a forked child."""
+    c = _WORKER
+    _seed_packer(c["packing_seed"], _DECOY_OFFSET + k)
+    decoy = make_decoy(c["pose"], c["sf_pack"], seed=c["seed"] + k,
+                       protocol=c["protocol"], repeats=c["repeats"])
+    E = apply_readout(
+        contact_energy_matrix(decoy, c["sf_measure"], c["background_weight"]),
+        c["mask"], c["readout"])
+    return k, E
+
+
 def compute_frustration(
     native_pose,
     sf_pack,
@@ -212,6 +296,9 @@ def compute_frustration(
     contact_atom=DEFAULT_CONTACT_ATOM,
     background_weight=DEFAULT_BACKGROUND_WEIGHT,
     readout=DEFAULT_READOUT,
+    n_jobs=1,
+    packing_seed=None,
+    jran_base=1,
     progress=None,
 ):
     """Run the full protocol and return a FrustrationResult.
@@ -222,9 +309,25 @@ def compute_frustration(
     sf_measure : score function WITHOUT fa_rep -- measures e_ij. See energies.py.
     protocol : passed to relax_sidechains. Defaults to "relax" (FastRelax), the literal
         reading of the paper's "short Monte-Carlo relaxation". "min" is ~10x faster.
-    progress : optional callable(done, total) invoked after each decoy. A 1000-decoy run
-        takes roughly 12 min with protocol="min" and around an hour with "relax", so a
-        caller usually wants some feedback.
+    n_jobs : decoy-building processes. 1 (the default) keeps the plain serial loop, so
+        every existing caller and every archived run stays exactly as it was. Contacts
+        are unaffected; only decoy construction is split. Measured speedup on 8 logical
+        cores (4 physical + SMT) is ~3.6x at n_jobs=4 and ~3.8-4.4x at n_jobs=8 -- the
+        gap from linear is SMT and memory contention, not Amdahl: the serial part
+        (setup + native reference) is ~5 s against ~2200 s of decoys at N=1000.
+    packing_seed : if set, decoy k's PACKING is pinned to packing_seed + k, making the
+        whole ensemble a pure function of (packing_seed, k) -- identical for any n_jobs,
+        any arrival order, any resume point. Off by default because it changes the
+        numbers relative to every archived run, and because an unseeded packer is what
+        makes the ensemble an independent sample on a re-run. Its purpose is
+        verification: with it set, serial and parallel results are bit-identical.
+    jran_base : base for the per-worker Rosetta RNG streams (worker w gets
+        jran_base + w). Only used when n_jobs > 1 and packing_seed is None.
+    progress : optional callable(done, total) invoked after each decoy. `done` is a
+        monotone count of completions, not a decoy index, so the contract is identical
+        in serial and parallel. A 1000-decoy run takes roughly 12 min with
+        protocol="min" and around an hour with "relax", so a caller usually wants some
+        feedback.
 
     The native reference goes through the same repack-and-relax as the decoys, which the
     paper requires -- see decoys.native_reference.
@@ -246,6 +349,10 @@ def compute_frustration(
     # ensemble incomparable to the native.
     mask = contact_mask(len(residues), contacts)
 
+    # Pinned FIRST, and computed in the parent exactly once. If a worker ever rebuilt E0
+    # the index would become a mixture of incomparable references -- visible only as mild
+    # extra scatter that no test would flag.
+    _seed_packer(packing_seed, _NATIVE_OFFSET)
     native = native_reference(native_pose, sf_pack, protocol=protocol, repeats=repeats)
     E0 = apply_readout(
         contact_energy_matrix(native, sf_measure, background_weight), mask, readout
@@ -256,17 +363,53 @@ def compute_frustration(
     n = E0.shape[0]
     total = np.zeros((n, n))
     total_sq = np.zeros((n, n))
-    for k in range(n_decoys):
-        decoy = make_decoy(
-            native_pose, sf_pack, seed=seed + k, protocol=protocol, repeats=repeats
-        )
-        E = apply_readout(
-            contact_energy_matrix(decoy, sf_measure, background_weight), mask, readout
-        )
+    n_jobs = max(1, min(int(n_jobs), n_decoys))    # never fork more workers than decoys
+
+    def accumulate(k, E):
+        nonlocal total, total_sq
         total += E
         total_sq += E * E
+        seen.append(k)
         if progress is not None:
-            progress(k + 1, n_decoys)
+            progress(len(seen), n_decoys)
+
+    seen = []
+    if n_jobs == 1:
+        for k in range(n_decoys):
+            _seed_packer(packing_seed, _DECOY_OFFSET + k)
+            decoy = make_decoy(
+                native_pose, sf_pack, seed=seed + k, protocol=protocol, repeats=repeats
+            )
+            E = apply_readout(
+                contact_energy_matrix(decoy, sf_measure, background_weight), mask, readout
+            )
+            accumulate(k, E)
+    else:
+        import multiprocessing as mp
+
+        # fork, explicitly: the workers inherit the pose and both score functions, and
+        # ScoreFunction cannot be pickled, so no other start method works without
+        # rebuilding them. Verified that inherited objects give bit-identical energies.
+        ctx = mp.get_context("fork")
+        _WORKER.update(pose=native_pose, sf_pack=sf_pack, sf_measure=sf_measure,
+                       mask=mask, seed=seed, protocol=protocol, repeats=repeats,
+                       background_weight=background_weight, readout=readout,
+                       packing_seed=packing_seed)
+        counter = ctx.Value("i", 0)     # from the SAME context as the Pool, or SemLock errors
+        try:
+            with ctx.Pool(n_jobs, initializer=_worker_init,
+                          initargs=(jran_base, counter)) as pool:
+                # imap, NOT imap_unordered. Workers still run ahead freely -- only the
+                # YIELDING is ordered -- but the parent then accumulates in the same
+                # order the serial loop does. Float addition is not associative, so this
+                # is what lets serial and parallel agree bit-for-bit rather than to
+                # ~1e-12, and it keeps `progress` firing once per decoy in order.
+                for k, E in pool.imap(_worker_decoy, range(n_decoys), chunksize=1):
+                    accumulate(k, E)
+        finally:
+            _WORKER.clear()
+
+    _check_accounting(seen, n_decoys)
 
     mean = total / n_decoys
     # Population variance, matching the paper's sigma over the N decoys. Clipped at zero

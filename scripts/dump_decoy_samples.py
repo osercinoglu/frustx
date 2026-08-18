@@ -34,8 +34,19 @@ The native reference is stored in the checkpoint and NOT recomputed on resume. I
 through a repack whose packer draws from Rosetta's global RNG, which is not seeded per
 call, so recomputing it would silently give a different E0 for the second half of the run.
 
+PARALLEL. Decoys are independent, so this forks a worker pool. Two things change from
+the serial version and both matter:
+
+  * Completion is OUT OF ORDER, so the checkpoint cannot be a "first n_done decoys are
+    finished" high-water mark any more -- that would be meaningless. It is a boolean
+    `done` mask of length n_decoys, and a resume submits exactly the unfinished indices.
+  * The tensor is allocated with np.full(nan) rather than np.empty. With a prefix count
+    and np.empty, a checkpoint claiming n_done=35 while decoys 25-29 were still in flight
+    would have shipped UNINITIALISED MEMORY into the final .npz, and nothing downstream
+    would have noticed.
+
 Usage:
-    .venv/bin/python scripts/dump_decoy_samples.py <pdb> <out.npz> [n_decoys] [protocol]
+    .venv/bin/python scripts/dump_decoy_samples.py <pdb> <out.npz> [n_decoys] [protocol] [n_jobs]
 
     Re-running the same command after an interruption resumes; delete <out>.partial.npz
     to force a clean start.
@@ -48,6 +59,7 @@ import pyrosetta
 
 from frustx.decoys import make_decoy, native_reference
 from frustx.energies import init_rosetta, make_score_function
+from frustx.config import DEFAULT_BACKGROUND_WEIGHT
 from frustx.frustration import contact_energy_matrix, residues_from_pose
 
 
@@ -58,28 +70,29 @@ CHECKPOINT_EVERY = 25
 
 
 def _load_checkpoint(path, n_decoys, n):
-    """Return (decoys, native, n_done) from a partial run, or (None, None, 0).
+    """Return (decoys, native, done_mask) from a partial run, or (None, None, None).
 
     A checkpoint whose shape does not match what was asked for is ignored rather than
     trusted -- resuming a 500-decoy run into a 1000-decoy request would silently mix two
     different requests.
     """
     if not os.path.exists(path):
-        return None, None, 0
+        return None, None, None
     try:
         d = np.load(path, allow_pickle=True)
-        done = int(d["n_done"])
-        if d["decoys"].shape != (n_decoys, n, n) or not (0 < done <= n_decoys):
-            print(f"ignoring {path}: shape/count mismatch", flush=True)
-            return None, None, 0
-        print(f"resuming from {path} at decoy {done}/{n_decoys}", flush=True)
+        done = d["done"].astype(bool)
+        if d["decoys"].shape != (n_decoys, n, n) or done.shape != (n_decoys,):
+            print(f"ignoring {path}: shape mismatch", flush=True)
+            return None, None, None
+        print(f"resuming from {path}: {done.sum()}/{n_decoys} decoys already done",
+              flush=True)
         return d["decoys"], d["native"], done
     except Exception as exc:                       # a truncated write is not fatal
         print(f"ignoring unreadable checkpoint {path}: {exc}", flush=True)
-        return None, None, 0
+        return None, None, None
 
 
-def main(pdb, out, n_decoys, protocol):
+def main(pdb, out, n_decoys, protocol, n_jobs=1):
     init_rosetta()
     pose = pyrosetta.pose_from_pdb(pdb)
 
@@ -91,15 +104,19 @@ def main(pdb, out, n_decoys, protocol):
 
     n = pose.total_residue()
     partial = str(out) + ".partial.npz"
-    decoys, native, start = _load_checkpoint(partial, n_decoys, n)
+    decoys, native, done = _load_checkpoint(partial, n_decoys, n)
 
     if decoys is None:
         # The native goes through the same repack as the decoys -- comparing an
-        # unrelaxed native against relaxed decoys would bias every index positive.
+        # unrelaxed native against relaxed decoys would bias every index positive. It is
+        # built ONCE, in the parent, and stored in the checkpoint: a worker rebuilding it
+        # under a different RNG stream would give a different E0 for part of the run.
         nat_pose = native_reference(pose, sf_pack, protocol=protocol)
         native = contact_energy_matrix(nat_pose, sf_measure)
-        decoys = np.empty((n_decoys, n, n), dtype=np.float64)
-        start = 0
+        # NaN, not np.empty: an unfinished slot must be obviously unfinished. See the
+        # module docstring on why np.empty plus a prefix count was actively dangerous.
+        decoys = np.full((n_decoys, n, n), np.nan, dtype=np.float64)
+        done = np.zeros(n_decoys, dtype=bool)
 
     res = residues_from_pose(pose)
     labels = dict(
@@ -108,20 +125,64 @@ def main(pdb, out, n_decoys, protocol):
         resname=np.array([r.resname for r in res]),
     )
 
-    for k in range(start, n_decoys):
-        # Seed by index: decoy k always gets the same SEQUENCE, on a resume or not.
-        # The packing is not seeded -- see the module docstring.
-        decoys[k] = contact_energy_matrix(make_decoy(pose, sf_pack, seed=k, protocol=protocol), sf_measure)
-        if (k + 1) % 10 == 0:
-            print(f"{k + 1}/{n_decoys}", flush=True)
-        if (k + 1) % CHECKPOINT_EVERY == 0 and (k + 1) < n_decoys:
-            # Write to a temp path and rename: a kill DURING the checkpoint write would
-            # otherwise leave a truncated file where a good one used to be.
-            tmp = partial + ".tmp.npz"
-            np.savez_compressed(tmp, decoys=decoys, native=native,
-                                n_done=k + 1, **labels)
-            os.replace(tmp, partial)
-            print(f"  checkpoint at {k + 1}", flush=True)
+    todo = np.flatnonzero(~done).tolist()
+    n_jobs = max(1, min(n_jobs, len(todo))) if todo else 1
+
+    def save_checkpoint():
+        # Write to a temp path and rename: a kill DURING the checkpoint write would
+        # otherwise leave a truncated file where a good one used to be.
+        tmp = partial + ".tmp.npz"
+        np.savez_compressed(tmp, decoys=decoys, native=native, done=done, **labels)
+        os.replace(tmp, partial)
+
+    def record(k, E):
+        # Indexed by the k carried in the RESULT, never by arrival order -- under
+        # out-of-order completion those are different, and using arrival order would
+        # permute the tensor rows. Nothing downstream would complain: mean, sigma and
+        # index are all order-invariant, but scripts/packer_noise.py and the
+        # Rao-Blackwell analysis join row k to seed k and would be silently wrong.
+        decoys[k] = E
+        done[k] = True
+
+    print(f"{len(todo)} decoys to build on {n_jobs} worker(s)", flush=True)
+    if n_jobs == 1:
+        for count, k in enumerate(todo, 1):
+            record(k, contact_energy_matrix(
+                make_decoy(pose, sf_pack, seed=k, protocol=protocol), sf_measure))
+            if count % 10 == 0:
+                print(f"{int(done.sum())}/{n_decoys}", flush=True)
+            if count % CHECKPOINT_EVERY == 0 and count < len(todo):
+                save_checkpoint()
+                print(f"  checkpoint at {int(done.sum())}", flush=True)
+    else:
+        import multiprocessing as mp
+
+        from frustx.frustration import _WORKER, _worker_init, _worker_decoy, contact_mask
+        ctx = mp.get_context("fork")
+        # readout="pair" with an all-True mask: this script wants the raw contact energy
+        # matrix, the same quantity the serial version stored.
+        _WORKER.update(pose=pose, sf_pack=sf_pack, sf_measure=sf_measure,
+                       mask=None, seed=0, protocol=protocol, repeats=1,
+                       background_weight=DEFAULT_BACKGROUND_WEIGHT, readout="pair",
+                       packing_seed=None)
+        counter = ctx.Value("i", 0)
+        try:
+            with ctx.Pool(n_jobs, initializer=_worker_init,
+                          initargs=(1, counter)) as pool:
+                for count, (k, E) in enumerate(
+                        pool.imap_unordered(_worker_decoy, todo, chunksize=1), 1):
+                    record(k, E)
+                    if count % 10 == 0:
+                        print(f"{int(done.sum())}/{n_decoys}", flush=True)
+                    if count % CHECKPOINT_EVERY == 0 and count < len(todo):
+                        save_checkpoint()
+                        print(f"  checkpoint at {int(done.sum())}", flush=True)
+        finally:
+            _WORKER.clear()
+
+    if not done.all():
+        raise RuntimeError(f"only {int(done.sum())}/{n_decoys} decoys completed")
+    assert not np.isnan(decoys).any(), "a decoy slot was never written"
 
     np.savez_compressed(out, decoys=decoys, native=native, **labels)
     if os.path.exists(partial):
@@ -134,4 +195,5 @@ if __name__ == "__main__":
     # the run whose index distribution motivated the question.
     main(sys.argv[1], sys.argv[2],
          int(sys.argv[3]) if len(sys.argv) > 3 else 200,
-         sys.argv[4] if len(sys.argv) > 4 else "min")
+         sys.argv[4] if len(sys.argv) > 4 else "min",
+         int(sys.argv[5]) if len(sys.argv) > 5 else 1)
