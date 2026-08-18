@@ -2048,3 +2048,90 @@ All four items are now closed, three negative:
 
 Decoy construction is not where the FrustX–frustratometeR disagreement lives. Readout scope
 is the only axis measured so far that moves contact-specific agreement at all.
+
+## Parallel decoy generation, and the two bugs the review caught
+
+The package had no parallelism: `compute_frustration` and `dump_decoy_samples.py` both ran
+a serial `for`. Decoys are independent, so they now fork a worker pool. `n_jobs` defaults
+to 1, leaving every archived run and existing caller untouched.
+
+**Measured on 1UBQ, 96 decoys, `protocol="min"`** (4 physical cores + SMT):
+
+| n_jobs | wall (s) | speedup | efficiency |
+|---|---|---|---|
+| 1 | 60.9 | 1.00 | — |
+| 2 | 31.4 | 1.94 | 0.97 |
+| 4 | 18.8 | 3.24 | 0.81 |
+| 8 | 13.9 | 4.40 | 0.55 |
+
+The sublinearity at 8 is **SMT, not Amdahl**: the serial part (the native reference) is
+~1% of runtime, which would allow 7.5×. Per-pose cost rises 0.628 s → 0.665 s at j=4 →
+1.07 s at j=8. Four workers is the efficient point; eight buys a further 36% for double
+the memory.
+
+### The hazard, and why the obvious implementation is wrong
+
+Rosetta's packer draws from a global RNG and forked workers inherit it, producing
+correlated packings and a quietly understated σ — no error, no warning. The trap:
+`frustx.energies.init_rosetta()` **cannot** be the worker initializer, because its
+`_INITIALISED` module guard is inherited as `True` across the fork, making the call a
+silent no-op. Workers call `pyrosetta.init` directly with `-constant_seed -jran <base + w>`.
+
+`fork` is mandatory rather than incidental: `ScoreFunction` is not picklable, so workers
+must inherit the pose and both score functions.
+
+### Two bugs found by adversarial review, both real
+
+**1. Parallel runs were not independent samples.** `jran_base` defaulted to a fixed `1`, so
+every invocation seeded worker *w* identically and **two runs of the same parallel command
+returned a bit-identical ensemble** — maxdiff exactly 0.0, against 0.53 for two serial
+runs. Anyone re-running with `-j 8` to grow an ensemble, or merging two runs, would add
+**zero information while the apparent standard error fell as though they had**. It also
+contradicted this implementation's own docstring. Fixed: `jran_base=None` draws fresh
+entropy per invocation, and the resolved value is returned on the result and written to
+`run.json`, so a run is reproducible *on demand* rather than *by accident*.
+
+**2. The test suite did not guard the hazard it was written for.** Deleting
+`initializer=_worker_init` from the Pool call left all 73 tests passing. The bit-identity
+tests set `packing_seed`, and `_seed_packer` overrides the worker's stream as the first
+statement of every decoy, so they are blind by construction.
+
+Two attempted fixes *also* failed against a sabotaged copy, and why is worth recording:
+
+- comparing outputs across `jran_base` values — the two calls run sequentially in one
+  parent whose RNG has advanced between them, so they differ either way;
+- comparing them with the parent RNG pinned — without the initializer the workers do start
+  from identical state, but **which worker draws which decoy varies between runs**, so the
+  outputs still differ.
+
+No assertion about output values can separate "workers have distinct streams" from "the
+scheduler dealt the decoys differently". The test must observe the wiring: a spy on
+`_worker_init` reporting each worker's actual seed through a file (a module global would
+not survive the fork). That version passes on the repo and fails on the sabotaged copy.
+
+### Why the checks are exact rather than statistical
+
+Packer noise is only 5.4% of decoy variance, so even total RNG correlation across 8 workers
+shifts σ by ~2.7%. Measured with a paired design (same 200 decoy sequences per arm, only
+the packing RNG differing): `median(σ_parallel / σ_serial) = 1.00000`, and a **maximally
+broken** run — workers verified to produce byte-identical packings, sd exactly 0.0 — was
+**still indistinguishable** in σ. A statistical check here has no power and must never be
+cited as evidence the RNG is correctly seeded.
+
+The exact check: with `packing_seed` set, `decoy_mean`, `decoy_std`, `index` and
+`native_energy` are bit-identical between `n_jobs=1` and 2/3/8 — maxabsdiff exactly 0.0,
+verified on 1UBQ as well as the test helix. Two things make that possible: `pool.imap`
+rather than `imap_unordered`, so the parent accumulates in serial order (float addition is
+not associative), and pinning the **native reference** as well as the decoys — omitting the
+latter left mean and σ bit-identical while `index` still wandered, since
+`index = (mean − E0)/σ`.
+
+Also fixed from the review: a worker dying *without raising* (Rosetta hard-exit, segfault,
+OOM kill) hung the parent forever — `Pool` has no broken-worker detection — now bounded by
+`decoy_timeout`; unbounded parent-side buffering in `imap` (2.0 GB worst case at n=500,
+N=1000, the exact figure the running-sum accumulation exists to avoid) — now windowed to
+`4 × n_jobs`; and `n_jobs=-1` silently running serial, which now raises.
+
+`scripts/packer_noise.py` stays serial deliberately, and says so at the loop: its result
+depends on the packer being unseeded, and parallelising it by copying this pattern would
+make it measure exactly zero.

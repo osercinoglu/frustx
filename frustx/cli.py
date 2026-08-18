@@ -77,6 +77,11 @@ def build_parser():
                         "pure function of the seed and identical at any --jobs. Off by "
                         "default: an unseeded packer is what makes a re-run an "
                         "independent sample. Mainly for verification")
+    p.add_argument("--jran-base", type=int, default=None,
+                   help="base for the per-worker Rosetta RNG streams. Default draws "
+                        "fresh entropy per invocation, so re-running with --jobs grows "
+                        "the ensemble as it does serially. Set it to reproduce a "
+                        "specific parallel run; the resolved value is in run.json")
     p.add_argument("--quiet", action="store_true", help="suppress progress output")
     p.add_argument("--version", action="version", version=f"frustx {__version__}")
     return p
@@ -132,6 +137,7 @@ def main(argv=None):
         contact_atom=args.contact_atom,
         n_jobs=args.jobs,
         packing_seed=args.packing_seed,
+        jran_base=args.jran_base,
         progress=progress,
     )
     elapsed = time.time() - started
@@ -161,6 +167,7 @@ def main(argv=None):
         "contact_atom": args.contact_atom,
         "n_jobs": args.jobs,
         "packing_seed": args.packing_seed,
+        "jran_base": result.jran_base,
         "packing_frustration": args.packing_frustration,
         "elapsed_seconds": round(elapsed, 1),
     }, indent=2) + "\n")

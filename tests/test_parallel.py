@@ -99,6 +99,69 @@ def test_unpinned_runs_are_independent_samples(helix, sfs):
     assert not np.array_equal(np.nan_to_num(a.decoy_mean), np.nan_to_num(b.decoy_mean))
 
 
+def test_pool_is_actually_wired_to_the_rng_initializer(helix, sfs, tmp_path, monkeypatch):
+    """END-TO-END guard that compute_frustration passes the initializer to its Pool.
+
+    THIS TEST EXISTS BECAUSE THE REST OF THE FILE DID NOT CATCH IT. An adversarial review
+    deleted `initializer=_worker_init` from the Pool call and all 73 tests still passed.
+    The bit-identity tests set packing_seed, and _seed_packer overrides the worker's
+    stream as the first statement of every decoy, so they are blind by construction.
+
+    IT MUST OBSERVE THE WIRING, NOT THE OUTPUT. Two output-comparison versions of this
+    test were written and BOTH passed against the sabotaged copy. The reason is worth
+    recording: without the initializer the workers do start from identical inherited
+    state, but which worker draws which decoy varies between runs, so the outputs differ
+    anyway. No assertion about output values can separate "workers have distinct streams"
+    from "the scheduler dealt the decoys differently".
+
+    So the spy records the seed each worker actually ends up with. Under fork the patched
+    module is inherited by the children, so the spy runs in each worker; it reports
+    through a file because a module global would not propagate back across the fork.
+    """
+    import frustx.frustration as F
+
+    log = tmp_path / "worker_seeds.txt"
+    real = F._worker_init
+
+    def spy(jran_base, counter):
+        real(jran_base, counter)
+        from pyrosetta.rosetta.numeric.random import rg
+        with open(log, "a") as fh:
+            fh.write(f"{rg().get_seed()}\n")
+
+    monkeypatch.setattr(F, "_worker_init", spy)
+    compute_frustration(helix, *sfs, n_decoys=4, protocol="none", n_jobs=2,
+                        jran_base=7000)
+    seeds = sorted(int(x) for x in log.read_text().split())
+    assert seeds == [7000, 7001], (
+        f"expected one distinct RNG stream per worker, got {seeds} -- "
+        "compute_frustration is not passing _worker_init to its Pool"
+    )
+
+
+def test_parallel_reruns_are_independent_samples(helix, sfs):
+    """Re-running must grow the ensemble in parallel exactly as it does serially.
+
+    Regression guard on a real bug: jran_base defaulted to a fixed 1, so two invocations
+    of the same parallel command returned a BIT-IDENTICAL ensemble (measured maxdiff 0.0
+    against 0.53 serial). Merging two such runs adds no information while the apparent
+    standard error falls as though it had.
+    """
+    kw = dict(n_decoys=4, seed=0, protocol="min", n_jobs=2)
+    a = compute_frustration(helix, *sfs, **kw)
+    b = compute_frustration(helix, *sfs, **kw)
+    assert not np.array_equal(np.nan_to_num(a.decoy_mean), np.nan_to_num(b.decoy_mean))
+    assert a.jran_base != b.jran_base
+
+
+@pytest.mark.parametrize("bad", [0, -1, -4, None])
+def test_nonsense_job_counts_raise_rather_than_running_serially(helix, sfs, bad):
+    """`-1` is joblib's "all cores". Clamping it up to 1 would turn a familiar flag into
+    a silent 8x slowdown on an hour-long run, with run.json recording n_jobs=-1."""
+    with pytest.raises(ValueError, match="n_jobs must be"):
+        compute_frustration(helix, *sfs, n_decoys=3, protocol="none", n_jobs=bad)
+
+
 def test_progress_counter_is_monotone_in_parallel(helix, sfs):
     """`done` is a count of completions, never a decoy index.
 

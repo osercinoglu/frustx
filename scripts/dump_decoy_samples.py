@@ -166,9 +166,13 @@ def main(pdb, out, n_decoys, protocol, n_jobs=1):
                        background_weight=DEFAULT_BACKGROUND_WEIGHT, readout="pair",
                        packing_seed=None)
         counter = ctx.Value("i", 0)
+        # Fresh RNG base per invocation. A hardcoded base would make every run of this
+        # command produce a bit-identical tensor, and would make a RESUME redraw packer
+        # randomness from stream positions the pre-crash run already consumed.
+        jran_base = int.from_bytes(os.urandom(4), "little") % (2 ** 31 - n_jobs - 1)
         try:
             with ctx.Pool(n_jobs, initializer=_worker_init,
-                          initargs=(1, counter)) as pool:
+                          initargs=(jran_base, counter)) as pool:
                 for count, (k, E) in enumerate(
                         pool.imap_unordered(_worker_decoy, todo, chunksize=1), 1):
                     record(k, E)

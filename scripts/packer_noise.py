@@ -54,6 +54,12 @@ def main(pdb, n_repeats=12, n_seqs=4, npz="results/validation/decoy_samples/1ubq
     # because packer noise could plausibly depend on which sequence was drawn.
     print(f"{n_seqs} fixed sequences x {n_repeats} rebuilds each "
           f"({n_seqs * n_repeats} poses)", flush=True)
+    # DELIBERATELY SERIAL, and it must stay that way. This loop measures packer
+    # stochasticity by rebuilding one sequence repeatedly, which depends on the packer
+    # drawing fresh randomness each time. Parallelising it by copying the pattern in
+    # frustx/frustration.py would give forked workers -constant_seed streams, identical
+    # rebuilds, and a measured packer noise of exactly 0.0 -- a wrong answer that looks
+    # like a clean result.
     within = []
     for s in range(n_seqs):
         # seed=s reproduces decoy s's SEQUENCE exactly; only the packing differs between

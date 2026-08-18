@@ -39,6 +39,7 @@ not address it. Treat glycine-rich and tail regions with suspicion until the
 frustratometeR comparison shows whether the reference implementation behaves the same way.
 """
 
+import os
 from dataclasses import dataclass
 
 import numpy as np
@@ -70,6 +71,7 @@ class FrustrationResult:
     decoy_std: np.ndarray       # (n, n) sigma(E_ij)
     index: np.ndarray           # (n, n) F_ij, conventional sign
     n_decoys: int
+    jran_base: int = None       # resolved per-worker RNG base; None if run serially
 
 
 def residues_from_pose(pose):
@@ -226,9 +228,11 @@ def _worker_init(jran_base, counter):
     with counter.get_lock():
         wid = counter.value
         counter.value += 1
+    # DEFAULT_INIT_FLAGS rather than a copy of its value: duplicating the literal would
+    # let the parent and the workers silently diverge the moment a flag is added there.
+    from frustx.energies import DEFAULT_INIT_FLAGS
     pyrosetta.init(
-        f"-mute all -ignore_unrecognized_res -constant_seed -jran {jran_base + wid}",
-        silent=True,
+        f"{DEFAULT_INIT_FLAGS} -constant_seed -jran {jran_base + wid}", silent=True,
     )
 
 
@@ -298,7 +302,8 @@ def compute_frustration(
     readout=DEFAULT_READOUT,
     n_jobs=1,
     packing_seed=None,
-    jran_base=1,
+    jran_base=None,
+    decoy_timeout=3600.0,
     progress=None,
 ):
     """Run the full protocol and return a FrustrationResult.
@@ -323,6 +328,22 @@ def compute_frustration(
         verification: with it set, serial and parallel results are bit-identical.
     jran_base : base for the per-worker Rosetta RNG streams (worker w gets
         jran_base + w). Only used when n_jobs > 1 and packing_seed is None.
+
+        DEFAULTS TO None, MEANING "FRESH PER INVOCATION", and it must. A fixed base
+        makes every parallel run of the same command bit-identical, which silently
+        destroys the property the serial path has for free: that re-running grows an
+        ensemble. With a fixed base, running twice with n_jobs=8 and merging adds ZERO
+        information while the apparent standard error falls as if it had. Measured
+        before this was fixed: two parallel invocations gave maxdiff exactly 0.0
+        against 0.53 for two serial ones. The resolved value is returned on the result
+        and written to run.json so a run stays reproducible ON DEMAND without being
+        reproducible BY ACCIDENT.
+    decoy_timeout : seconds to wait for any single decoy before giving up. Guards
+        against a worker dying WITHOUT raising -- a Rosetta hard-exit, a segfault in the
+        packer, or the OOM killer taking one of several forked Rosetta processes. Pool
+        has no broken-worker detection: the task simply never returns a result and the
+        parent blocks forever with the progress line frozen. Generous by default so it
+        never fires on a slow FastRelax decoy.
     progress : optional callable(done, total) invoked after each decoy. `done` is a
         monotone count of completions, not a decoy index, so the contract is identical
         in serial and parallel. A 1000-decoy run takes roughly 12 min with
@@ -363,7 +384,15 @@ def compute_frustration(
     n = E0.shape[0]
     total = np.zeros((n, n))
     total_sq = np.zeros((n, n))
-    n_jobs = max(1, min(int(n_jobs), n_decoys))    # never fork more workers than decoys
+    # Raise rather than clamp up. `-1` is joblib's "use all cores", and silently running
+    # an hour-long job serially because the user typed a familiar flag -- while run.json
+    # dutifully records n_jobs=-1 -- is worse than refusing.
+    if n_jobs is None or int(n_jobs) < 1:
+        raise ValueError(
+            f"n_jobs must be >= 1, got {n_jobs!r}. There is no 'use all cores' sentinel; "
+            f"pass an explicit count."
+        )
+    n_jobs = min(int(n_jobs), n_decoys)             # never fork more workers than decoys
 
     def accumulate(k, E):
         nonlocal total, total_sq
@@ -374,6 +403,7 @@ def compute_frustration(
             progress(len(seen), n_decoys)
 
     seen = []
+    resolved_jran_base = None
     if n_jobs == 1:
         for k in range(n_decoys):
             _seed_packer(packing_seed, _DECOY_OFFSET + k)
@@ -391,6 +421,12 @@ def compute_frustration(
         # ScoreFunction cannot be pickled, so no other start method works without
         # rebuilding them. Verified that inherited objects give bit-identical energies.
         ctx = mp.get_context("fork")
+        if jran_base is None:
+            # Fresh entropy per invocation -- see the jran_base docstring. os.urandom
+            # rather than the `seed` argument, which controls the SEQUENCE shuffle and
+            # is deliberately fixed across runs.
+            jran_base = int.from_bytes(os.urandom(4), "little") % (2 ** 31 - n_jobs - 1)
+        resolved_jran_base = jran_base
         _WORKER.update(pose=native_pose, sf_pack=sf_pack, sf_measure=sf_measure,
                        mask=mask, seed=seed, protocol=protocol, repeats=repeats,
                        background_weight=background_weight, readout=readout,
@@ -404,12 +440,32 @@ def compute_frustration(
                 # order the serial loop does. Float addition is not associative, so this
                 # is what lets serial and parallel agree bit-for-bit rather than to
                 # ~1e-12, and it keeps `progress` firing once per decoy in order.
-                for k, E in pool.imap(_worker_decoy, range(n_decoys), chunksize=1):
-                    accumulate(k, E)
+                # Windowed, not one long imap. imap buffers out-of-order results in the
+                # PARENT with no bound: one slow task made 299 of 300 results pile up in
+                # a probe (+94 MB), and at n=500 / N=1000 that worst case is 2.0 GB --
+                # exactly what the running-sum accumulation above exists to avoid.
+                # A window of 4*n_jobs bounds it to tens of MB for a negligible number
+                # of barriers.
+                window = max(4 * n_jobs, 16)
+                for start in range(0, n_decoys, window):
+                    batch = range(start, min(start + window, n_decoys))
+                    it = pool.imap(_worker_decoy, batch, chunksize=1)
+                    for _ in batch:
+                        try:
+                            k, E = it.next(timeout=decoy_timeout)
+                        except mp.TimeoutError:
+                            pool.terminate()
+                            raise RuntimeError(
+                                f"no decoy completed within {decoy_timeout}s -- a worker "
+                                f"probably died without raising (Rosetta hard-exit, "
+                                f"segfault, or OOM kill). Pool cannot detect this itself."
+                            ) from None
+                        accumulate(k, E)
         finally:
             _WORKER.clear()
 
     _check_accounting(seen, n_decoys)
+
 
     mean = total / n_decoys
     # Population variance, matching the paper's sigma over the N decoys. Clipped at zero
@@ -429,6 +485,7 @@ def compute_frustration(
         decoy_std=std,
         index=index,
         n_decoys=n_decoys,
+        jran_base=resolved_jran_base,
     )
 
 
