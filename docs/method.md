@@ -2135,3 +2135,69 @@ N=1000, the exact figure the running-sum accumulation exists to avoid) — now w
 `scripts/packer_noise.py` stays serial deliberately, and says so at the loop: its result
 depends on the packer being unseeded, and parallelising it by copying this pattern would
 make it measure exactly zero.
+
+## Reporting both parts: one-body and contact-specific
+
+This document has repeatedly used "additive R²" as a criticism — of `w = 1`, of the
+neighbourhood readout, of frustratometeR's mutational mode. That framing was too narrow,
+and it is corrected here rather than left standing.
+
+Write the index as
+
+    F_ij  =  [ c + a_i + a_j ]  +  [ residual ]
+             one-body / additive     contact-specific
+
+**Both parts are real quantities.** The first is everything a residue carries to all of
+its contacts — burial, exposure, local packing — and burial genuinely is most of what
+determines whether a contact is well-optimised. Ferreiro's single-residue frustration is
+*deliberately* a residue-level index. A 95%-additive index is not measuring nothing.
+
+What a high additive fraction does mean is narrower: **such an index cannot support a
+claim about a particular contact**, because nearly all its variation is predictable from
+the two residues alone. That is the only thing the earlier sections were entitled to
+conclude, and it is why the one-body-residualised ρ was the control that mattered.
+
+So FrustX reports both, per contact, rather than offering them as alternatives:
+
+| column | question it answers |
+|---|---|
+| `frustration_index` | the index itself |
+| `frustration_index_onebody` | is this residue in a frustrated environment? |
+| `frustration_index_specific` | is THIS PAIR frustrated, beyond what its residues predict? |
+
+plus `onebody_coefficient` per residue in `residues.csv`, and `additive_r2` in `run.json`.
+`frustration_class` stays on the raw index: the 0.78 / −1.0 thresholds are inherited from
+AWSEM and calibrated against that quantity, not against a residual.
+
+### Identifiability, which is the one piece of maths that bites
+
+The design matrix for `c + a_i + a_j` is **rank deficient**: adding *t* to `c` while
+subtracting *t*/2 from every `a_i` leaves every fitted value unchanged (verified — rank 6
+of 7 columns on a 6-residue toy, two coefficient vectors differing by 3.7 giving identical
+fits). Therefore:
+
+- `fitted` and `residual` are **unique**, so both per-contact columns are well defined;
+- the per-residue coefficients are **not**. `lstsq`'s minimum-norm solution is
+  deterministic and reproducible, but the absolute level is arbitrary. Compare residues
+  *within* a run, read differences, never compare coefficients across runs.
+
+A fit with fewer usable contacts than parameters is exact by construction and meaningless,
+so it reports NaN rather than R² = 1.0.
+
+### Sanity check: the specific part finds chemistry
+
+On 1UBQ (40 decoys, `min`, w = 0), the three contacts with the largest
+`frustration_index_specific` are:
+
+| contact | index | one-body | specific |
+|---|---|---|---|
+| LYS27–ASP52 | +6.22 | +0.15 | **+6.08** |
+| ASP39–ARG74 | +5.19 | +0.84 | **+4.35** |
+| GLU16–LYS29 | +4.44 | +0.44 | **+4.01** |
+
+All three are **salt bridges**, and LYS27–ASP52 is ubiquitin's well-known buried one. This
+is what a contact-specific index should do: a charge pair is minimally frustrated *because
+these two residues are together*, not because either is individually buried — and the
+decomposition puts almost all of it in the specific column (+6.08 of +6.22) rather than the
+one-body one. Not a validation of the index's absolute scale, but a direct check that the
+residual is chemistry rather than noise.

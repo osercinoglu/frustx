@@ -62,7 +62,7 @@ python3 -m venv .venv
 PATH=".venv/bin:$PATH" .venv/bin/python -m pip install pyrosetta-installer
 PATH=".venv/bin:$PATH" .venv/bin/python -c "import pyrosetta_installer; pyrosetta_installer.install_pyrosetta(serialization=True)"
 
-.venv/bin/python -m pytest tests/ -q     # 79 tests; all but tests/test_contacts.py need PyRosetta
+.venv/bin/python -m pytest tests/ -q     # 85 tests; all but tests/test_contacts.py need PyRosetta
 ```
 
 ### Data (DVC + GCS)
@@ -120,7 +120,17 @@ Useful flags:
 | `--protocol` | `relax` (default, FastRelax) or `min` (~10× faster) — this sets Eq. 1's denominator, so it moves every index |
 | `--packing-frustration` | keep `fa_rep`, giving the paper's separate structure-quality measure |
 | `--cutoff` | Cα–Cα contact cutoff, default 10 Å |
+| `-j, --jobs` | decoy-building processes (default 1). ~3.2x at `-j 4`; `-j 8` on 4 physical cores buys only 4.4x |
+| `--contact-atom` | `CA` (default, the paper's definition) or `CB`, which admits far fewer pairs with no atomistic interaction |
+| `--readout` | `pair` (default) or `neighbourhood`, matching what frustratometeR sums. Diagnostic |
 | `--background-weight` | weight `w` on the Eq. 2 background term, default `0` (direct pair energy only). `w=1` is Eq. 2 as literally written, which makes the index degenerate — see `docs/method.md` |
+
+`contacts.csv` carries the index split into the part predictable from the two residues
+alone (`frustration_index_onebody` — burial, exposure, packing) and what is particular to
+that pair (`frustration_index_specific`). Both are real quantities and neither is the
+"true" one: a residue-level question wants the first, while a claim about a *particular*
+contact needs the second. `run.json` records `additive_r2`, the fraction of the index the
+one-body part explains. See `docs/method.md`.
 
 Colour the output in PyMOL with `spectrum b, blue_white_red, all`. High positive =
 minimally frustrated, matching frustratometeR's convention (the paper's Eq. 1 uses the

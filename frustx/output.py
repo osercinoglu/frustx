@@ -14,11 +14,28 @@ Three views, in increasing order of lossiness:
 import numpy as np
 import pandas as pd
 
+from frustx.additivity import additive_decomposition
 from frustx.frustration import classify
 
 
 def contact_table(result):
-    """One row per contact. This is the primary output."""
+    """One row per contact. This is the primary output.
+
+    Three index columns, not one, because "is this contact frustrated?" is two questions:
+
+        frustration_index           the index itself
+        frustration_index_onebody   the part predictable from the two residues alone
+                                    (c + a_i + a_j) -- burial, exposure, local packing
+        frustration_index_specific  what is left, i.e. what is particular to THIS pair
+
+    Neither part is the "real" one. A residue-level question wants the one-body column; a
+    claim about a particular contact needs the specific column, because an index that is
+    largely one-body cannot support one however well it correlates with anything. See
+    frustx/additivity.py, and "Reporting both parts" in docs/method.md.
+
+    frustration_class stays on the raw index: the 0.78 / -1.0 thresholds are inherited
+    from AWSEM and calibrated against that quantity, not against the residual.
+    """
     rows = []
     for i, j in result.contacts:
         ri, rj = result.residues[i], result.residues[j]
@@ -35,6 +52,11 @@ def contact_table(result):
     df = pd.DataFrame(rows)
     if not df.empty:
         df["frustration_class"] = classify(df["frustration_index"].to_numpy())
+        d = additive_decomposition(
+            df["frustration_index"].to_numpy(), result.contacts, len(result.residues)
+        )
+        df["frustration_index_onebody"] = d.fitted
+        df["frustration_index_specific"] = d.residual
     return df
 
 
@@ -45,8 +67,17 @@ def residue_table(result):
     mirror what frustratometeR reports, and are often more informative than the mean:
     a residue with many minimally frustrated contacts and a few highly frustrated ones
     is a different thing from a uniformly neutral residue, and averaging hides that.
+
+    `onebody_coefficient` is this residue's a_i from the additive fit -- the amount it
+    shifts every contact it takes part in. IT IS IDENTIFIED ONLY UP TO A CONSTANT (the
+    fit is rank deficient), so compare residues WITHIN a run and never across runs, and
+    read differences rather than absolute values.
     """
     n = len(result.residues)
+    decomposition = additive_decomposition(
+        np.array([result.index[i, j] for i, j in result.contacts], dtype=float),
+        result.contacts, n,
+    ) if len(result.contacts) else None
     per_residue = [[] for _ in range(n)]
     for i, j in result.contacts:
         value = result.index[i, j]
@@ -63,6 +94,8 @@ def residue_table(result):
                 "chain": res.chain,
                 "resnum": res.resseq,
                 "resname": res.resname,
+                "onebody_coefficient": (decomposition.coefficients[idx]
+                                        if decomposition is not None else np.nan),
                 "n_contacts": len(values),
                 "mean_frustration": finite.mean() if finite.size else np.nan,
                 "n_minimally_frustrated": int((labels == "minimally").sum()),

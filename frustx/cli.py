@@ -145,6 +145,12 @@ def main(argv=None):
         print(file=sys.stderr)
 
     contacts = contact_table(result)
+    # Recorded because it is the single number saying whether this run's index can support
+    # a claim about a particular contact, as opposed to about the two residues in it.
+    from frustx.additivity import additive_decomposition
+    additive_r2 = additive_decomposition(
+        contacts["frustration_index"].to_numpy(), result.contacts, len(result.residues)
+    ).r2
     residues = residue_table(result)
     contacts.to_csv(args.out / "contacts.csv", index=False)
     residues.to_csv(args.out / "residues.csv", index=False)
@@ -168,6 +174,7 @@ def main(argv=None):
         "n_jobs": args.jobs,
         "packing_seed": args.packing_seed,
         "jran_base": result.jran_base,
+        "additive_r2": None if additive_r2 != additive_r2 else round(float(additive_r2), 6),
         "packing_frustration": args.packing_frustration,
         "elapsed_seconds": round(elapsed, 1),
     }, indent=2) + "\n")
