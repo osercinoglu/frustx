@@ -68,3 +68,38 @@ def local_decoy(native_pose, ca_coords, i, j, aa_i, aa_j, sf_pack, relax=True):
             mm.set_chi(idx + 1, True)    # only shell side chains relax
         MinMover(mm, sf_pack, "lbfgs_armijo_nonmonotone", 1e-2, True).apply(pose)
     return pose
+
+def local_native_reference(native_pose, ca_coords, i, j, sf_pack, relax=True):
+    """The native put through the IDENTICAL shell-restricted treatment as a local decoy.
+
+    This is the pair-local analogue of decoys.native_reference, and it is not optional.
+    Eq. 1 compares E0 against a decoy ensemble; if E0 comes from an untouched crystal pose
+    while the decoys have been repacked and minimised in a 10 A shell, the difference
+    between them is partly the preparation, not the sequence. The whole-sequence path has
+    made that mistake impossible since decoys.py existed -- this closes the same hole here.
+
+    Implemented by running local_decoy() with the residues' OWN identities: they are still
+    repacked (restrict_absent_canonical_aas to a single allowed amino acid re-designs the
+    rotamer), the shell still repacks, the same MinMover still runs.
+    """
+    aa_i = native_pose.residue(i + 1).name1()
+    aa_j = native_pose.residue(j + 1).name1()
+    return local_decoy(native_pose, ca_coords, i, j, aa_i, aa_j, sf_pack, relax=relax)
+
+
+def sample_pair(q, rng):
+    """Draw (a_i, a_j) from the SAME law the whole-sequence decoys induce.
+
+    q comes from rao_blackwell.exact_pair_weights: under a shuffle of the native sequence,
+    positions i and j receive identities (a,b) with probability n_a n_b / (L(L-1)), or
+    n_a(n_a-1)/(L(L-1)) on the diagonal.
+
+    Matching this law is what keeps the pair-local index comparable to the production one:
+    the two schemes then differ ONLY in whether the rest of the protein is also shuffled,
+    which is the single variable the experiment is meant to isolate. Sampling uniformly
+    over the 20x20 grid instead would change the estimand as well, confounding the two.
+    """
+    cells = list(q)
+    p = np.array([q[c] for c in cells])
+    return cells[rng.choice(len(cells), p=p / p.sum())]
+
