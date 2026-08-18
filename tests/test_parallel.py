@@ -146,12 +146,28 @@ def test_parallel_reruns_are_independent_samples(helix, sfs):
     of the same parallel command returned a BIT-IDENTICAL ensemble (measured maxdiff 0.0
     against 0.53 serial). Merging two such runs adds no information while the apparent
     standard error falls as though it had.
+
+    The guard is on the SEED, not on the energies. Asserting that two unpinned runs
+    produce different decoy means looked like the stronger test and was in fact a flaky
+    one: on a 14-residue helix the packer has few enough rotamer choices that it lands
+    on the same answer from either stream, and the assertion failed about 1 run in 6
+    (measured, in isolation -- not an ordering effect). A flaky guard is one that gets
+    ignored, so the two directions are tested separately and exactly instead: different
+    seeds must be DRAWN, and a pinned seed must REPRODUCE. Together those say the seed
+    is what controls the ensemble, which is what the bug broke.
     """
     kw = dict(n_decoys=4, seed=0, protocol="min", n_jobs=2)
     a = compute_frustration(helix, *sfs, **kw)
     b = compute_frustration(helix, *sfs, **kw)
-    assert not np.array_equal(np.nan_to_num(a.decoy_mean), np.nan_to_num(b.decoy_mean))
-    assert a.jran_base != b.jran_base
+    assert a.jran_base != b.jran_base, (
+        f"both runs drew jran_base={a.jran_base} -- re-running is not an independent "
+        "sample, it is the same ensemble twice"
+    )
+
+    pinned = dict(kw, jran_base=4242, packing_seed=11)
+    c = compute_frustration(helix, *sfs, **pinned)
+    d = compute_frustration(helix, *sfs, **pinned)
+    assert np.array_equal(np.nan_to_num(c.decoy_mean), np.nan_to_num(d.decoy_mean))
 
 
 @pytest.mark.parametrize("bad", [0, -1, -4, None])

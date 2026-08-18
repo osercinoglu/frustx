@@ -2136,6 +2136,31 @@ N=1000, the exact figure the running-sum accumulation exists to avoid) — now w
 depends on the packer being unseeded, and parallelising it by copying this pattern would
 make it measure exactly zero.
 
+### The same lesson, learned again on the regression guard itself
+
+`test_parallel_reruns_are_independent_samples` originally asserted that two unpinned
+parallel runs produce *different* `decoy_mean` arrays. That looked like the strong form of
+the test. It was the weak form, and flaky in both directions:
+
+- **False alarms.** On the 14-residue test helix the packer has few enough rotamer choices
+  that it lands on the same answer from either RNG stream. The assertion failed about
+  **1 run in 6** in isolation — not an ordering effect, and not caught earlier because a
+  single green run says nothing about a 17% failure rate.
+- **False passes, which is worse.** Re-run against a sabotaged copy with the original bug
+  restored (`jran_base = 1`), the two runs' decoy means still differed
+  (−0.60007 vs −0.60957). The assertion the guard rested on could have passed on the exact
+  build it exists to reject.
+
+Replaced with two exact assertions in opposite directions: two unpinned runs must **draw**
+different `jran_base`, and a **pinned** `jran_base` + `packing_seed` must reproduce
+bit-identically. Together they say the seed is what controls the ensemble, which is what
+the bug broke. Verified 8/8 green on the real repo and failing with a legible message
+(`assert 1 != 1`) on the sabotage.
+
+This is the third time in this document that a statistic over decoy energies has been shown
+to have no power to detect an RNG fault. The rule is now explicit: **never assert on energy
+values to test seeding; assert on the seed.**
+
 ## Reporting both parts: one-body and contact-specific
 
 This document has repeatedly used "additive R²" as a criticism — of `w = 1`, of the
