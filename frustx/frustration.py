@@ -50,6 +50,8 @@ from frustx.energies import pair_energy_matrix
 from frustx.config import (  # constants live there so the CLI can read
     DEFAULT_BACKGROUND_WEIGHT,  # them without importing PyRosetta
     DEFAULT_N_DECOYS,
+    DEFAULT_READOUT,
+    READOUT_SCOPES,
     HIGHLY_FRUSTRATED,
     MINIMALLY_FRUSTRATED,
 )
@@ -141,6 +143,44 @@ def contact_energy_matrix(pose, sf_measure, background_weight=DEFAULT_BACKGROUND
     return E
 
 
+def contact_mask(n, contacts):
+    """Symmetric (n, n) boolean mask that is True at every contacting pair.
+
+    `contacts` is the (n_contacts, 2) i<j array from contacts.contact_pairs. The mask is
+    what makes "neighbourhood" a *contact* neighbourhood rather than a sum over the whole
+    matrix -- without it, residues that never touch would contribute to the readout.
+    """
+    M = np.zeros((n, n), dtype=bool)
+    M[contacts[:, 0], contacts[:, 1]] = True
+    return M | M.T
+
+
+def apply_readout(E, mask, readout=DEFAULT_READOUT):
+    """Map a contact-energy matrix to the quantity Eq. 1 is applied to.
+
+        "pair"           E_ij                                      (unchanged)
+        "neighbourhood"  sum_k E_ik + sum_l E_jl - E_ij            (k, l over contacts)
+
+    The neighbourhood form matches the scope frustratometeR sums over -- see
+    READOUT_SCOPES in config.py for why that is worth measuring. E_ij is subtracted once
+    because it appears in BOTH row sums; the result counts it exactly once, as
+    frustratometeR does.
+
+    MUST be applied per-structure BEFORE Eq. 1, never afterwards. The map is linear in E,
+    but Eq. 1 is not: sigma of a sum is not the sum of sigmas, so transforming the native
+    and each decoy separately (as compute_frustration does) is the only correct order.
+    """
+    if readout == "pair":
+        return E
+    if readout != "neighbourhood":
+        raise ValueError(f"unknown readout {readout!r}, expected one of {READOUT_SCOPES}")
+    # mask * E zeroes non-contacts, so `row` is each residue's summed contact energy.
+    row = (E * mask).sum(axis=1)
+    # Subtract the masked E so that a non-contacting (i, j) -- which was never in either
+    # row sum -- is not wrongly decremented. At real contacts mask is 1 and this is E_ij.
+    return row[:, None] + row[None, :] - (E * mask)
+
+
 def compute_frustration(
     native_pose,
     sf_pack,
@@ -152,6 +192,7 @@ def compute_frustration(
     cutoff=DEFAULT_CUTOFF,
     min_seq_sep=1,
     background_weight=DEFAULT_BACKGROUND_WEIGHT,
+    readout=DEFAULT_READOUT,
     progress=None,
 ):
     """Run the full protocol and return a FrustrationResult.
@@ -177,8 +218,16 @@ def compute_frustration(
         residues, ca_coords_from_pose(native_pose), cutoff=cutoff, min_seq_sep=min_seq_sep
     )
 
+    # The readout mask is built ONCE from the native contact map and reused for every
+    # decoy. Decoys keep the native backbone, so the contact map cannot drift -- and if
+    # it could, letting each decoy define its own neighbourhood would make the decoy
+    # ensemble incomparable to the native.
+    mask = contact_mask(len(residues), contacts)
+
     native = native_reference(native_pose, sf_pack, protocol=protocol, repeats=repeats)
-    E0 = contact_energy_matrix(native, sf_measure, background_weight)
+    E0 = apply_readout(
+        contact_energy_matrix(native, sf_measure, background_weight), mask, readout
+    )
 
     # Accumulate running sums rather than holding 1000 (n x n) matrices: at n=500 that
     # would be 2 GB.
@@ -189,7 +238,9 @@ def compute_frustration(
         decoy = make_decoy(
             native_pose, sf_pack, seed=seed + k, protocol=protocol, repeats=repeats
         )
-        E = contact_energy_matrix(decoy, sf_measure, background_weight)
+        E = apply_readout(
+            contact_energy_matrix(decoy, sf_measure, background_weight), mask, readout
+        )
         total += E
         total_sq += E * E
         if progress is not None:

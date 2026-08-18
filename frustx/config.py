@@ -51,3 +51,29 @@ HIGHLY_FRUSTRATED = -1.0
 # This does NOT fix the correlation with frustratometeR, which sits at rho ~ 0.15
 # regardless of w. It fixes the character of the index, not its agreement.
 DEFAULT_BACKGROUND_WEIGHT = 0.0
+
+
+# --- Readout scope -----------------------------------------------------------------
+#
+# WHAT ENERGY GOES INTO Eq. 1, as opposed to how much background is mixed into it
+# (DEFAULT_BACKGROUND_WEIGHT, above). The two are orthogonal knobs and are easy to
+# confuse: `background_weight` changes the *definition* of a contact energy E_ij;
+# `readout` changes *which set of contact energies* Eq. 1 is applied to.
+#
+#   "pair"          E_ij alone -- what the paper's Eq. 1 scores, and FrustX's default.
+#   "neighbourhood" E_ij plus every other contact energy touching i or j.
+#
+# "neighbourhood" exists because it is what frustratometeR actually sums. Its mutational
+# decoy energy is not a pair energy at all: fix_backbone.cpp:5214-5243 sums
+# water(i,j) + burial_i + burial_j + sum_k water(i,k) + sum_k water(j,k). Comparing
+# FrustX's bare pair energy against that is a scope mismatch, not just a force-field
+# difference, and it is the single largest identified driver of the two tools'
+# disagreement -- larger than the whole background-weight sweep.
+#
+# It is NOT the default, and should not become one on current evidence: the
+# neighbourhood readout is ~94% reducible to a residue-additive function, i.e. it buys
+# agreement partly by becoming the same kind of degenerate quantity that w=1 does. It is
+# provided so the scope axis can be measured separately from the force-field axis.
+# See "Readout scope" in docs/method.md.
+DEFAULT_READOUT = "pair"
+READOUT_SCOPES = ("pair", "neighbourhood")

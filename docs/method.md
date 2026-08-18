@@ -1624,3 +1624,78 @@ emitted with `frustration_class = "undefined"` rather than a fabricated number.
 None of the 17 appear in frustratometeR's contact set, so they never entered any
 comparison above. Worth noting as an intrinsic mismatch between a Cα contact definition
 and an all-atom energy — not a bug, but a reason the raw contact counts differ (475 vs 389).
+
+## Readout scope: the largest identified driver of the frustratometeR disagreement
+
+Every FrustX-vs-frustratometeR comparison in this document up to here compared our bare
+`e_ij` against their neighbourhood sum. That was a **scope mismatch on top of a force-field
+difference**, and nobody had isolated the two.
+
+frustratometeR's mutational decoy energy is not a pair energy. Reading it out of the AWSEM
+source that builds its shipped LAMMPS binary (`fix_backbone.cpp:5214-5243`, vendored at
+`results/reference/awsem_source/`):
+
+    E_fR(i,j) = water(i,j) + burial_i + burial_j + SUM_k water(i,k) + SUM_k water(j,k)
+
+FrustX at `w = 0` measures `e_ij` alone. So the two indices were never scoped to the same
+thing. `frustx/frustration.py:apply_readout` now makes that axis explicit and testable:
+
+```python
+def apply_readout(E, mask, readout=DEFAULT_READOUT):
+    if readout == "pair":
+        return E
+    row = (E * mask).sum(axis=1)
+    return row[:, None] + row[None, :] - (E * mask)
+```
+
+`E_ij` is subtracted once because it appears in *both* row sums. The transform must be
+applied per-structure **before** Eq. 1, never after: it is linear in E, but Eq. 1 is not,
+and σ of a sum is not the sum of σ. Unit tests on hand-checkable toy matrices are in
+`tests/test_readout.py` (a lone contact's neighbourhood must equal its own pair energy:
+counting `E_ij` twice gives 10, dropping it gives 0, only counting once gives 5).
+
+### Result: seven structures, decoy ensemble and energy function held fixed
+
+`scripts/readout_scope.py` -> `results/readout_scope.csv`. Nothing but the readout changes;
+no new decoys, no PyRosetta, pure post-processing of tensors already on disk.
+
+| scope | ρ vs fR | additive R² | **residualised ρ** | AUC |
+|---|---|---|---|---|
+| pair (current default) | +0.3008 | 0.2629 | **−0.0650** | 0.674 |
+| neighbourhood (fR-matched) | +0.5210 | 0.9525 | **+0.2302** | 0.843 |
+
+Means over 1UBQ + the six GTPases (n = 344–970 shared contacts each). The effect is not a
+one-protein artifact: **ρ rises in all 7, and the residualised ρ flips sign in all 7**,
+from a −0.011…−0.111 band to a +0.165…+0.299 band.
+
+The residualised column is the one that matters. Regressing `c + a_i + a_j` out of both
+sides removes everything a residue carries to all of its contacts — burial, exposure, local
+packing — so what survives is contact-specific by construction. **This is the first
+configuration in this document's record with positive contact-specific agreement with
+frustratometeR.** It is the test that killed the `w` sweep (+0.32 → +0.54 raw, ~0 after
+residualisation), killed the AWSEM-force-field comparison, and killed the pair-local decoy
+claim. Scope is the first knob to survive it.
+
+### What this does not license
+
+**Do not make it the default, and do not read the magnitude as agreement.** Additive R²
+goes 0.26 → 0.95: the neighbourhood readout is 95% reducible to a residue-additive
+function, and frustratometeR's mutational index is itself ~95% additive. So most of the ρ
+gain is the two indices becoming *jointly degenerate* — the same failure mode as `w = 1`,
+reached by a different route. `+0.2302` is the residual of a 95%-additive quantity; the
+**sign and its consistency across 7 structures are the durable findings, not the value**.
+
+This cuts against the project's own purpose. FrustX exists to provide per-contact
+specificity; a readout that is 95% one-body does not provide it, however well it correlates.
+The honest statement is: *scope mismatch accounts for more of the FrustX–frustratometeR
+disagreement than any force-field or protocol difference measured so far, and once scope is
+matched a real contact-specific signal appears that was previously absent.* Whether that
+signal is worth having at 95% additivity is a separate question this does not settle.
+
+It also **retires the class-separation statistic** as evidence. Separation moves from
+AUC 0.674 to 0.843 without touching a single decoy — so the "nearly doubled separation" that
+was the sole support for the pair-local decoy scheme (`scripts/local_decoy.py`) cannot
+support a conclusion about decoy locality. That claim needs re-running with rank-based
+endpoints and a matched shell-restricted native reference, or dropping.
+
+`DEFAULT_READOUT = "pair"` stays. The flag is `--readout {pair,neighbourhood}`, diagnostic.
