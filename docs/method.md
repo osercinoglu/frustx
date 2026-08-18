@@ -1810,3 +1810,70 @@ it — and the paper specifies Cα. Changing the default would also break compar
 every run measured so far. This is recorded so the default can be revisited deliberately
 rather than drifting; the honest summary is that **Cβ makes FrustX's own output cleaner and
 its contact set interoperable, and buys nothing on the benchmark.**
+
+## Rao-Blackwellisation: correct, and not worth wiring in
+
+Eq. 1's numerator needs E[e_ij] over the decoy law. The plain estimator is the sample mean,
+which carries Monte-Carlo error in *which identity pairs happened to be drawn*. That law is
+known exactly — FrustX shuffles the native sequence, so
+
+    q(a,b) = n_a n_b / (L(L-1))        a != b
+    q(a,a) = n_a (n_a - 1) / (L(L-1))
+
+Re-weighting by the exact `q` instead of the empirical frequency is post-stratification:
+**same estimand**, and normally lower variance, at zero new Rosetta compute.
+
+**Prerequisite, verified rather than assumed.** The whole analysis needs decoy sequences,
+which the `.npz` files do not store. They are recoverable because `make_decoy` seeds a
+stdlib `random.Random(k)` whose only consumer is one shuffle (`frustx/decoys.py:130-131`,
+`scripts/dump_decoy_samples.py:50`). Checked against PyRosetta directly: `pose.sequence()`
+is identical to the one-letter form of `npz["resname"]` on both 1XTQ (169) and 1UBQ (76),
+the shuffle is deterministic per seed, and composition is preserved. **So any
+identity-resolved analysis of runs already on disk is free** — no re-dump, no PyRosetta.
+Worth knowing before anyone budgets a re-run for it.
+
+The weights themselves are tested against brute-force enumeration of every permutation
+(`tests/test_pair_weights.py`), not merely against themselves.
+
+### Result
+
+`scripts/rao_blackwell.py` → `results/rao_blackwell.csv`. 360 contacts over 1UBQ, 1XTQ and
+1OIV; 25 replicates of n = 250 decoys; endpoint is the SD of the index across replicates at
+fixed N, so lower is a strictly better estimator.
+
+| estimator | median SD ratio vs plain | bias vs full-500 |
+|---|---|---|
+| plain sample mean | 1.000 | −0.0005 |
+| post-stratified on the **joint** (a_i,a_j) cell | **1.010** | +0.0031 |
+| post-stratified on the **additive** marginals | **0.917** | +0.0022 |
+
+All three are unbiased to within ±0.003.
+
+**Joint post-stratification is slightly worse than doing nothing**, exactly as predicted
+before running it. A contact sees a median of 217 of 400 cells with ~1 observation each; a
+"cell mean" computed from one sample *is* that sample, and re-weighting by q/p̂ adds variance
+faster than conditioning removes it. Sparse strata defeat the method.
+
+**The additive form works**: conditioning on the two identities separately gives 20+20
+levels (~25 observations each) instead of 400 cells, for an 8.3% SD reduction — equivalent
+to about **19% more decoys, free**.
+
+### Why it is not being wired in
+
+Because 19% more decoys buys nothing anyone needs. The attenuation analysis already showed
+decoy sampling noise is not the limiting factor by three orders of magnitude: reliability at
+N=500 is 0.987, the ceiling it imposes on any external correlation is 0.99, and the observed
+correlation is 0.32. Improving reliability from 0.987 to roughly 0.989 is immaterial to every
+question currently open.
+
+So this goes in as a **measurement, not a feature**. Adding a second estimator path to
+`frustx/frustration.py` would mean a second thing to keep correct, a second thing to explain
+in `run.json`, and a divergence between runs — to move a number that no conclusion depends
+on. `scripts/rao_blackwell.py` records the result and the machinery if the situation ever
+changes (a low-N regime, or a decoy scheme whose per-contact budget is genuinely scarce —
+which pair-local decoys would be).
+
+Note also a limitation of the additive form: it re-weights only the **numerator**, keeping
+the plain sample SD as Eq. 1's denominator, and it assumes identities act additively — which
+is not obviously safe given that the joint pair cell governs ~70% of within-contact σ. It is
+unbiased here empirically; that is not the same as being safe in general.
