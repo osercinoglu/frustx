@@ -1968,3 +1968,83 @@ Decoy k's shuffle depends only on `seed=k`, but the packer is unseeded, so decoy
 after a resume has the same sequence and a slightly different packing. A resumed run is
 statistically equivalent to an uninterrupted one, not identical — fine for a sampled
 ensemble, but it means a resumed run cannot reproduce an earlier run's exact numbers.
+
+## Tier 2 result: decoy locality does not work, and the old claim was a scale artifact
+
+The last surviving item of the decoy-redesign proposal. `scripts/pair_local_run.py` on
+1XTQ: 112 frustratometeR-'highly' + 112 fR-'minimally' contacts, **every reachable identity
+pair enumerated** (360 cells — 19 distinct amino acids, minus one singleton diagonal), decoy
+mean and σ computed exactly under the shuffle weights rather than sampled. 105 min on 8
+cores, 80,640 poses. Endpoints pre-registered in commit `8d6481b` before any index existed.
+
+| scheme | ρ vs fR | additive R² | **residualised ρ** | AUC |
+|---|---|---|---|---|
+| whole-sequence (production) | +0.2205 | 0.6135 | −0.0108 | 0.6386 |
+| pair-local | +0.2144 | **0.7231** | −0.0114 | 0.6307 |
+
+*(These whole-sequence numbers are lower than the +0.2958 / 0.311 reported for full 1XTQ
+because this is a balanced subset of 224 extreme contacts, not all 959. The comparison is
+within one contact set, which is what matters.)*
+
+**It fails on every endpoint.** ρ down, AUC down, residualised ρ unchanged at essentially
+zero — and additive R² **rises** 0.61 → 0.72, i.e. the pair-local index is *more*
+residue-additive than the one it replaces. That is the opposite of the intended direction:
+FrustX exists to supply contact specificity, and this trades some away.
+
+### The mechanism did not fire
+
+The whole rationale was that freezing the environment removes context variance from σ. The
+packer-noise control said 28% of within-contact variance is context rather than packer
+noise, which predicts σ falling by roughly 15%. Measured:
+
+- median σ ratio (pair-local / whole-sequence) = **0.968** — a 3% reduction, not 15%
+- σ is smaller for only **127 of 224** contacts (57%, barely above a coin flip)
+- the two indices correlate at **ρ = +0.906** — freezing the context barely moves the index
+
+So context variance is real (the packer-noise control was right) but is not recoverable by
+this construction. Note that `local_decoy`'s shell still repacks — it only forbids identity
+changes outside the pair — so some of the context variation survives by design.
+
+### The old "nearly doubled separation" claim, resolved
+
+`docs/method.md` recorded that pair-local decoys "nearly double the separation" between fR's
+frustrated and minimally-frustrated contacts, and that was the sole evidence for this whole
+line. It **reproduces, and it is an artifact**:
+
+| | whole-sequence | pair-local |
+|---|---|---|
+| median F gap (a **scale** statistic) | 0.224 | **0.289** ↑ |
+| AUC (a **rank** statistic) | 0.6386 | 0.6307 ↓ |
+
+The gap widens by 29% while the ranking gets *worse*. This is exactly the diagnosis recorded
+before the run — that a shell-local scheme shrinks σ and inflates |F| mechanically, and that
+any scale-based separation statistic would rise without the ordering improving. **The
+original claim is withdrawn**; it measured σ shrinkage, not discrimination.
+
+### Two things that did work
+
+**Enumeration replaces sampling entirely.** The pair-local energy is essentially a
+deterministic function of (i, j, a_i, a_j) — 11 of 12 tested combinations bit-identical
+across processes and seeds. So there is no decoy *sample* at all: all 360 reachable cells
+are evaluated and Eq. 1's mean and σ are exact. This retires the question that started this
+whole line of work. "How many decoys per contact?" has an answer, and it is *all of them*,
+at ~2× the cost of 200 sampled ones.
+
+**The matched native reference was required but nearly free.** Median |E0_local − E0_whole|
+is 0.0028 REU. It had to be built — comparing an unprepared native against shell-repacked
+decoys is the error `decoys.native_reference` exists to prevent — but it changes almost
+nothing numerically here.
+
+### Verdict on the decoy-redesign proposal
+
+All four items are now closed, three negative:
+
+| proposal | outcome |
+|---|---|
+| decoy counts too low | dead — reliability 0.987, more decoys buy +0.002 |
+| minimum decoys per contact | vacuous under shuffling; **answered by enumeration** under locality |
+| strategic amino-acid selection | inadmissible (positivity violation); identity governs ~70% of σ |
+| localise the decoy | **fails** — ρ, AUC down; additive R² up; σ reduction 3% not 15% |
+
+Decoy construction is not where the FrustX–frustratometeR disagreement lives. Readout scope
+is the only axis measured so far that moves contact-specific agreement at all.
