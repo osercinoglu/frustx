@@ -13,11 +13,34 @@ Output is an .npz holding:
     native  (n_res, n_res)            E_ij for the repacked native reference
     resseq, chain, resname            residue labels, so contacts can be joined back
 
-Memory is not a concern: 1UBQ is 76 residues, so 200 decoys is ~9 MB.
+Memory is not a concern: 1UBQ is 76 residues, so 200 decoys is ~9 MB. RAM does become a
+wall for big proteins -- the tensor is 8*N*n^2 bytes, so n=500 at N=1000 is 2 GB.
+
+CHECKPOINTING. This script used to build the whole tensor in RAM and write only after the
+final decoy, so a job killed at 499/500 lost everything -- which is exactly what happened
+to a fig2 run. It now writes <out>.partial.npz every CHECKPOINT_EVERY decoys and resumes
+from it, re-entering the loop at the first unfinished decoy.
+
+Resumption reproduces the SEQUENCE ensemble exactly -- decoy k's shuffle depends only on
+seed=k (frustx/decoys.py:130) -- but NOT the energies bit-for-bit. Rosetta is initialised
+without -constant_seed (frustx/energies.py:37), so the packer draws from a global RNG that
+differs between processes: decoy k built after a resume has the same sequence as decoy k
+built before it, and a slightly different packing. A resumed run is therefore statistically
+equivalent to an uninterrupted one, not identical to it. That is the correct standard here
+(the decoy ensemble is a sample, not a fixed object), but it does mean a resumed run cannot
+be used to reproduce an earlier run's exact numbers.
+
+The native reference is stored in the checkpoint and NOT recomputed on resume. It goes
+through a repack whose packer draws from Rosetta's global RNG, which is not seeded per
+call, so recomputing it would silently give a different E0 for the second half of the run.
 
 Usage:
     .venv/bin/python scripts/dump_decoy_samples.py <pdb> <out.npz> [n_decoys] [protocol]
+
+    Re-running the same command after an interruption resumes; delete <out>.partial.npz
+    to force a clean start.
 """
+import os
 import sys
 
 import numpy as np
@@ -26,6 +49,34 @@ import pyrosetta
 from frustx.decoys import make_decoy, native_reference
 from frustx.energies import init_rosetta, make_score_function
 from frustx.frustration import contact_energy_matrix, residues_from_pose
+
+
+# Every 25 decoys is ~50 s of work at the measured 'min' cost on a 169-residue protein --
+# small enough that a teardown costs little, large enough that rewriting the partial
+# tensor stays a rounding error on the total.
+CHECKPOINT_EVERY = 25
+
+
+def _load_checkpoint(path, n_decoys, n):
+    """Return (decoys, native, n_done) from a partial run, or (None, None, 0).
+
+    A checkpoint whose shape does not match what was asked for is ignored rather than
+    trusted -- resuming a 500-decoy run into a 1000-decoy request would silently mix two
+    different requests.
+    """
+    if not os.path.exists(path):
+        return None, None, 0
+    try:
+        d = np.load(path, allow_pickle=True)
+        done = int(d["n_done"])
+        if d["decoys"].shape != (n_decoys, n, n) or not (0 < done <= n_decoys):
+            print(f"ignoring {path}: shape/count mismatch", flush=True)
+            return None, None, 0
+        print(f"resuming from {path} at decoy {done}/{n_decoys}", flush=True)
+        return d["decoys"], d["native"], done
+    except Exception as exc:                       # a truncated write is not fatal
+        print(f"ignoring unreadable checkpoint {path}: {exc}", flush=True)
+        return None, None, 0
 
 
 def main(pdb, out, n_decoys, protocol):
@@ -38,28 +89,43 @@ def main(pdb, out, n_decoys, protocol):
     sf_pack = make_score_function(remove_fa_rep=False)
     sf_measure = make_score_function(remove_fa_rep=True)
 
-    # The native goes through the same repack as the decoys -- comparing an
-    # unrelaxed native against relaxed decoys would bias every index positive.
-    nat_pose = native_reference(pose, sf_pack, protocol=protocol)
-    native = contact_energy_matrix(nat_pose, sf_measure)
-
     n = pose.total_residue()
-    decoys = np.empty((n_decoys, n, n), dtype=np.float64)
-    for k in range(n_decoys):
-        # Seed by index so the run is reproducible and resumable.
-        decoys[k] = contact_energy_matrix(make_decoy(pose, sf_pack, seed=k, protocol=protocol), sf_measure)
-        if (k + 1) % 10 == 0:
-            print(f"{k + 1}/{n_decoys}", flush=True)
+    partial = str(out) + ".partial.npz"
+    decoys, native, start = _load_checkpoint(partial, n_decoys, n)
+
+    if decoys is None:
+        # The native goes through the same repack as the decoys -- comparing an
+        # unrelaxed native against relaxed decoys would bias every index positive.
+        nat_pose = native_reference(pose, sf_pack, protocol=protocol)
+        native = contact_energy_matrix(nat_pose, sf_measure)
+        decoys = np.empty((n_decoys, n, n), dtype=np.float64)
+        start = 0
 
     res = residues_from_pose(pose)
-    np.savez_compressed(
-        out,
-        decoys=decoys,
-        native=native,
+    labels = dict(
         resseq=np.array([r.resseq for r in res]),
         chain=np.array([r.chain for r in res]),
         resname=np.array([r.resname for r in res]),
     )
+
+    for k in range(start, n_decoys):
+        # Seed by index: decoy k always gets the same SEQUENCE, on a resume or not.
+        # The packing is not seeded -- see the module docstring.
+        decoys[k] = contact_energy_matrix(make_decoy(pose, sf_pack, seed=k, protocol=protocol), sf_measure)
+        if (k + 1) % 10 == 0:
+            print(f"{k + 1}/{n_decoys}", flush=True)
+        if (k + 1) % CHECKPOINT_EVERY == 0 and (k + 1) < n_decoys:
+            # Write to a temp path and rename: a kill DURING the checkpoint write would
+            # otherwise leave a truncated file where a good one used to be.
+            tmp = partial + ".tmp.npz"
+            np.savez_compressed(tmp, decoys=decoys, native=native,
+                                n_done=k + 1, **labels)
+            os.replace(tmp, partial)
+            print(f"  checkpoint at {k + 1}", flush=True)
+
+    np.savez_compressed(out, decoys=decoys, native=native, **labels)
+    if os.path.exists(partial):
+        os.remove(partial)          # only once the real output is safely on disk
     print(f"wrote {out}  decoys={decoys.shape}")
 
 

@@ -1877,3 +1877,94 @@ Note also a limitation of the additive form: it re-weights only the **numerator*
 the plain sample SD as Eq. 1's denominator, and it assumes identities act additively — which
 is not obviously safe given that the joint pair cell governs ~70% of within-contact σ. It is
 unbiased here empirically; that is not the same as being safe in general.
+
+## The packer-noise control: decoy locality has something to recover
+
+This gates the pair-local decoy idea, so it was run before spending compute on the idea
+itself. About 28% of within-contact decoy energy variance is not explained by the identity
+of the contacting pair. Two candidate explanations, with opposite consequences:
+
+- **context** — the other ~94% of the sequence being shuffled too. Freezing the environment
+  would recover it, and a pair-local scheme is worth building.
+- **packer stochasticity** — Rosetta is initialised without `-constant_seed`
+  (`frustx/energies.py:37`), so building the *same* sequence twice gives different rotamers
+  and different energies. If this dominates, no locality scheme recovers anything, because
+  the variance is not information about context at all.
+
+`scripts/packer_noise.py` measures it directly: rebuild ONE fixed decoy sequence 12 times
+(4 sequences × 12 rebuilds = 48 poses, ~2 min) so sequence and context are both exactly
+constant, and compare that spread to the total across different decoy sequences.
+
+**Verified the measurement is not vacuous first.** If the packer were deterministic the
+whole thing would read zero for trivial reasons. It is not: 5 rebuilds of one sequence give
+total energies of 112.2, 110.7, 109.6, 120.7, 124.0 REU, max per-contact |ΔE| = 9.5 REU.
+
+### Result: packer noise is 5.4% of the variance
+
+| percentile of packer-var / total-var | |
+|---|---|
+| p10 | 0.00000 |
+| p25 | 0.00001 |
+| p50 | 0.00046 |
+| p75 | 0.01115 |
+| p90 | 0.11459 |
+| p95 | 0.21831 |
+| **mean / pooled** | **0.0730 / 0.0537** |
+
+410 contacts, 1UBQ, `protocol="min"`. Only 46 of 410 contacts have packer noise above 10%
+of their total variance, 14 above 50%.
+
+**The gate opens.** The non-pair variance is overwhelmingly context, not noise, so freezing
+the environment is recovering real information rather than suppressing Monte-Carlo scatter.
+This is the first positive result for the decoy-locality proposal that does not rest on the
+retired class-separation statistic.
+
+It does not, on its own, say the pair-local index is *better* — only that the variance it
+removes is not noise. The 14 contacts where packer noise exceeds half the variance are worth
+watching: for those, a locality scheme is shrinking σ against a floor it cannot beat.
+
+## Measured cost of a pair-local pose, and what it rules out
+
+`scripts/bench_local_decoy.py`, 12 contacts spanning the shell-size range per structure:
+
+| | shell (residues) | s/pose median | scaling |
+|---|---|---|---|
+| 1UBQ (n=76) | 8–39 (median 24) | **0.248** | flat — 0.240 s fixed, no shell dependence |
+| 1XTQ (n=169) | 11–53 (median 31) | **0.469** | 0.0215 s per shell residue |
+
+**This is 2.5× the estimate the budget was built on** (0.186 s/pose for 1XTQ, extrapolated
+from whole-sequence cost by shell fraction). The extrapolation missed a fixed per-pose cost —
+cloning the pose and building the task factory — which is why 1UBQ shows no shell dependence
+at all: at that size the fixed cost is everything.
+
+Revised budget, at the measured cost:
+
+| experiment | poses | core-h | wall on 2 cores |
+|---|---|---|---|
+| 1UBQ balanced 224 × 200 | 44.8k | 3.1 | ~1.7 h |
+| 1XTQ balanced 224 × 200 | 44.8k | 5.8 | ~3.2 h |
+| 1XTQ full 1306 × 200 | 261k | 34.0 | ~19 h — **not affordable** |
+
+The overnight experiment survives at 3.2 h rather than 1.3 h. Full-protein pair-local is out.
+
+## Checkpointing: why the last long run lost everything
+
+`scripts/dump_decoy_samples.py` preallocated the whole tensor and called `savez_compressed`
+only after the final decoy, so a job killed at 499/500 lost 100% of the work — which is what
+happened to a fig2 run. The comment at `:49` claimed the run was "resumable"; nothing
+implemented it.
+
+It now writes `<out>.partial.npz` every 25 decoys and resumes from the first unfinished one,
+via write-to-temp-then-`os.replace` so a kill *during* a checkpoint write cannot truncate a
+good checkpoint. The native reference is stored in the checkpoint rather than recomputed,
+because its repack draws from the unseeded global RNG and recomputing would give a different
+E0 for the second half of the run.
+
+Tested by killing a 60-decoy run at 50 and resuming: resumed at 50, completed, no gaps in
+the tensor, partial cleaned up.
+
+**Resumption reproduces the sequence ensemble exactly, not the energies bit-for-bit.**
+Decoy k's shuffle depends only on `seed=k`, but the packer is unseeded, so decoy k built
+after a resume has the same sequence and a slightly different packing. A resumed run is
+statistically equivalent to an uninterrupted one, not identical — fine for a sampled
+ensemble, but it means a resumed run cannot reproduce an earlier run's exact numbers.
