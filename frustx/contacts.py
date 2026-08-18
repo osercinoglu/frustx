@@ -18,7 +18,7 @@ import numpy as np
 from Bio.PDB import PDBParser
 from Bio.PDB.Polypeptide import is_aa
 
-from frustx.config import DEFAULT_CUTOFF
+from frustx.config import DEFAULT_CONTACT_ATOM, DEFAULT_CUTOFF
 
 
 @dataclass(frozen=True)
@@ -44,8 +44,16 @@ class Residue:
         return f"{self.chain}:{self.resname}{self.resseq}{self.icode.strip()}"
 
 
-def load_ca(pdb_path, model_id=0):
-    """Parse a PDB file and return (residues, ca_coords).
+def load_ca(pdb_path, model_id=0, atom=DEFAULT_CONTACT_ATOM):
+    """Parse a PDB file and return (residues, coords).
+
+    `atom` selects which atom represents a residue for contact purposes:
+
+        "CA"  the paper's definition (Chen et al. specify Calpha-Calpha).
+        "CB"  the side-chain direction, falling back to CA for glycine (which has
+              no CB) and for residues whose CB is unresolved. This is
+              frustratometeR's convention, and it admits far fewer energetically
+              dead pairs -- see DEFAULT_CONTACT_ATOM in config.py for the numbers.
 
     Returns
     -------
@@ -84,8 +92,14 @@ def load_ca(pdb_path, model_id=0):
                     resname=res.get_resname(),
                 )
             )
-            coords.append(res["CA"].get_coord())
+            # CB falls back to CA for glycine, which has none, and for residues
+            # whose CB is unresolved in the density. Silently, because that is the
+            # standard convention -- frustratometeR does the same.
+            coords.append(res[atom].get_coord() if atom in res
+                          else res["CA"].get_coord())
 
+    if atom not in ("CA", "CB"):
+        raise ValueError(f"atom must be 'CA' or 'CB', got {atom!r}")
     if not residues:
         raise ValueError(f"No standard amino-acid residues with CA found in {pdb_path}")
 

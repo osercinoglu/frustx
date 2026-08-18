@@ -62,7 +62,7 @@ python3 -m venv .venv
 PATH=".venv/bin:$PATH" .venv/bin/python -m pip install pyrosetta-installer
 PATH=".venv/bin:$PATH" .venv/bin/python -c "import pyrosetta_installer; pyrosetta_installer.install_pyrosetta(serialization=True)"
 
-.venv/bin/python -m pytest tests/ -q     # 52 tests; all but tests/test_contacts.py need PyRosetta
+.venv/bin/python -m pytest tests/ -q     # 57 tests; all but tests/test_contacts.py need PyRosetta
 ```
 
 ### Data (DVC + GCS)

@@ -1756,3 +1756,57 @@ the two tools' nulls agree only in their marginal, and the docstring at
 `frustx/decoys.py:21-23` — which justifies shuffling by appeal to the paper's "native amino
 acid frequency distribution" — should not be read as claiming the reference implementation
 does the same thing. It does not.
+
+## Contact definition: CB fixes the contact set, not the benchmark
+
+A Cα–Cα cutoff is the paper's definition ("a cutoff of 10 Å is used"), but it admits pairs
+whose **side chains point away from each other**, for which no REF2015 term fires at all.
+Across the six GTPase runs, **1824 of 7687 contacts (23.7%) have decoy σ ≤ 0.02** — Eq. 1
+is 0/0 or nearly so. These are not merely quiet contacts, they are less reliable: split-half
+on 1XTQ gives **0.897 for them against 0.988 for the rest** (Spearman-Brown at N=500).
+
+### Which criterion separates the dead pairs
+
+Tested three, at **matched contact counts** so the comparison is not just "keep fewer":
+
+| criterion | ~4000 kept | ~5100 kept |
+|---|---|---|
+| Cα–Cα | 3.1% dead | 9.8% dead |
+| min heavy-atom distance | 1.8% dead | 8.2% dead |
+| **Cβ–Cβ** (Gly → CA) | **0.4% dead** | **3.0% dead** |
+
+Cβ wins, and beats minimum heavy-atom distance — which is initially counterintuitive, since
+heavy-atom distance is the more directly physical quantity. The reason is that **Cβ encodes
+side-chain direction**: two residues can have close backbones while their side chains point
+apart, which minimum-atom distance sees as a contact and the energy function does not.
+
+At the paper's cutoff scale: Cα ≤ 10.0 keeps 7687 (23.7% dead), Cβ ≤ 9.5 (frustratometeR's)
+keeps 5713 (6.0%), Cβ ≤ 9.0 keeps 5103 (3.0%).
+
+### It does not improve agreement with frustratometeR
+
+`scripts/contact_definition.py` → `results/contact_definition.csv`, means over 7 structures:
+
+| definition | contacts | dead | shared with fR | ρ | residualised ρ | AUC |
+|---|---|---|---|---|---|---|
+| Cα ≤ 10.0 | 1166 | 24.8% | 865 (74%) | +0.3008 | −0.0650 | 0.674 |
+| Cβ ≤ 9.5 | 958 | 7.7% | 958 (**100%**) | +0.2870 | −0.0516 | 0.659 |
+| Cβ ≤ 9.0 | 812 | 3.2% | 812 (**100%**) | +0.3084 | −0.0649 | 0.669 |
+
+**ρ is flat.** So is the residualised ρ, and AUC slightly falls. The dead contacts were never
+dragging the benchmark down, because the merge with frustratometeR already excluded them —
+they are largely contacts fR does not have. The reliability deficit was real but invisible to
+every comparison in this document.
+
+What Cβ does fix is the **contact-set mismatch**: under Cα ≤ 10 only 74% of FrustX's contacts
+exist in frustratometeR's set at all; under Cβ essentially **100%** do. The long-standing
+475-vs-389 discrepancy on 1UBQ is a contact-definition artifact, now closed.
+
+### Decision
+
+`DEFAULT_CONTACT_ATOM = "CA"` **stays**, and `--contact-atom CB` is exposed. The case for Cβ
+is internal-quality only — a quarter of reported contacts carry an index that is 0/0 or near
+it — and the paper specifies Cα. Changing the default would also break comparability with
+every run measured so far. This is recorded so the default can be revisited deliberately
+rather than drifting; the honest summary is that **Cβ makes FrustX's own output cleaner and
+its contact set interoperable, and buys nothing on the benchmark.**

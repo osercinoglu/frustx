@@ -77,3 +77,31 @@ DEFAULT_BACKGROUND_WEIGHT = 0.0
 # See "Readout scope" in docs/method.md.
 DEFAULT_READOUT = "pair"
 READOUT_SCOPES = ("pair", "neighbourhood")
+
+
+# --- Contact representative atom ----------------------------------------------------
+#
+# "CA" is the paper's definition, quoted in contacts.py, and stays the default so runs
+# remain comparable with everything measured so far.
+#
+# MEASURED CASE FOR "CB", recorded so the default can be revisited deliberately rather
+# than drifting. A Ca-Ca cutoff admits pairs whose side chains point away from each
+# other, for which no REF2015 term fires at all: across the six GTPase runs, 1824 of 7687
+# contacts (23.7%) have decoy sigma <= 0.02, and Eq. 1 is then 0/0 or near it. Those
+# contacts are genuinely less reliable, not merely quiet -- split-half reliability on
+# 1XTQ is 0.897 for them against 0.988 for the rest.
+#
+# At MATCHED contact counts CB separates the dead pairs better than either alternative
+# tested (~4000 contacts kept: 0.4% dead by CB, 1.8% by minimum heavy-atom distance,
+# 3.1% by CA). It beats minimum heavy-atom distance because CB encodes side-chain
+# DIRECTION -- two residues can have close backbones while their side chains point apart.
+#
+#   CA <= 10.0 (current) 7687 kept, 23.7% dead
+#   CB <=  9.5 (fR's)    5713 kept,  6.0% dead
+#   CB <=  9.0           5103 kept,  3.0% dead
+#   CB <=  8.5           4532 kept,  1.0% dead
+#
+# This is also part of why FrustX and frustratometeR disagree on which contacts exist at
+# all (475 vs 389 on 1UBQ, only 344 shared). See "Contact definition" in docs/method.md.
+DEFAULT_CONTACT_ATOM = "CA"
+CONTACT_ATOMS = ("CA", "CB")

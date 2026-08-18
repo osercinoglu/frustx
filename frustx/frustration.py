@@ -50,6 +50,8 @@ from frustx.energies import pair_energy_matrix
 from frustx.config import (  # constants live there so the CLI can read
     DEFAULT_BACKGROUND_WEIGHT,  # them without importing PyRosetta
     DEFAULT_N_DECOYS,
+    DEFAULT_CONTACT_ATOM,
+    CONTACT_ATOMS,
     DEFAULT_READOUT,
     READOUT_SCOPES,
     HIGHLY_FRUSTRATED,
@@ -102,6 +104,22 @@ def ca_coords_from_pose(pose):
     return np.array(
         [np.array(pose.residue(i).xyz("CA")) for i in range(1, pose.total_residue() + 1)]
     )
+
+
+def contact_coords_from_pose(pose, atom=DEFAULT_CONTACT_ATOM):
+    """Contact-representative coordinates, shape (n_residues, 3), aligned to pose numbering.
+
+    "CB" falls back to CA wherever there is no CB -- glycine, and any residue built
+    without one. Same convention as contacts.load_ca, and as frustratometeR.
+    """
+    if atom not in CONTACT_ATOMS:
+        raise ValueError(f"atom must be one of {CONTACT_ATOMS}, got {atom!r}")
+    out = []
+    for i in range(1, pose.total_residue() + 1):
+        r = pose.residue(i)
+        name = atom if (atom == "CA" or r.has(atom)) else "CA"
+        out.append(np.array(r.xyz(name)))
+    return np.array(out)
 
 
 def contact_energy_matrix(pose, sf_measure, background_weight=DEFAULT_BACKGROUND_WEIGHT):
@@ -191,6 +209,7 @@ def compute_frustration(
     repeats=1,
     cutoff=DEFAULT_CUTOFF,
     min_seq_sep=1,
+    contact_atom=DEFAULT_CONTACT_ATOM,
     background_weight=DEFAULT_BACKGROUND_WEIGHT,
     readout=DEFAULT_READOUT,
     progress=None,
@@ -215,7 +234,10 @@ def compute_frustration(
 
     residues = residues_from_pose(native_pose)
     contacts = contact_pairs(
-        residues, ca_coords_from_pose(native_pose), cutoff=cutoff, min_seq_sep=min_seq_sep
+        residues,
+        contact_coords_from_pose(native_pose, contact_atom),
+        cutoff=cutoff,
+        min_seq_sep=min_seq_sep,
     )
 
     # The readout mask is built ONCE from the native contact map and reused for every

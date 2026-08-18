@@ -22,7 +22,7 @@ from frustx import __version__
 # and `--version` stay instant. Everything that touches PyRosetta is imported in main().
 from frustx.config import (DEFAULT_BACKGROUND_WEIGHT, DEFAULT_CUTOFF,
                           DEFAULT_N_DECOYS, DEFAULT_READOUT, READOUT_SCOPES,
-                          RELAX_PROTOCOLS)
+                          CONTACT_ATOMS, DEFAULT_CONTACT_ATOM, RELAX_PROTOCOLS)
 
 
 def build_parser():
@@ -55,6 +55,10 @@ def build_parser():
                         "E_ij = e_ij + w/2 (R_i + R_j). 0 (default) uses the direct pair "
                         "energy alone; 1 reproduces the paper's Eq. 2, which was measured "
                         "to give a degenerate index -- see docs/method.md")
+    p.add_argument("--contact-atom", choices=CONTACT_ATOMS, default=DEFAULT_CONTACT_ATOM,
+                   help="atom representing a residue in the contact map. 'CA' (default) "
+                        "is the paper's definition; 'CB' (Gly falls back to CA) admits "
+                        "far fewer pairs with no atomistic interaction -- see config.py")
     p.add_argument("--readout", choices=READOUT_SCOPES, default=DEFAULT_READOUT,
                    help="energy scope Eq. 1 is applied to: 'pair' (default, the bare "
                         "contact energy) or 'neighbourhood' (that contact plus every "
@@ -116,6 +120,7 @@ def main(argv=None):
         min_seq_sep=args.min_seq_sep,
         background_weight=args.background_weight,
         readout=args.readout,
+        contact_atom=args.contact_atom,
         progress=progress,
     )
     elapsed = time.time() - started
@@ -142,6 +147,7 @@ def main(argv=None):
         "min_seq_sep": args.min_seq_sep,
         "background_weight": args.background_weight,
         "readout": args.readout,
+        "contact_atom": args.contact_atom,
         "packing_frustration": args.packing_frustration,
         "elapsed_seconds": round(elapsed, 1),
     }, indent=2) + "\n")
