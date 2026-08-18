@@ -2201,3 +2201,58 @@ these two residues are together*, not because either is individually buried — 
 decomposition puts almost all of it in the specific column (+6.08 of +6.22) rather than the
 one-body one. Not a validation of the index's absolute scale, but a direct check that the
 residual is chemistry rather than noise.
+
+---
+
+## The explainer page (`docs/explainer/`)
+
+A standalone page that explains the method and shows it working on 1UBQ. Built in two
+halves so neither ends up committed in the other's place:
+
+| File | Tracked in | What |
+|---|---|---|
+| `docs/explainer/template.html` | git | Markup, CSS, JS. **No numbers.** |
+| `docs/explainer/mathml.py` | git | LaTeX → MathML, at build time |
+| `docs/explainer/build.py` | git | Assembles the two |
+| `scripts/artefact_payload.py` | git | Recomputes the numbers from `results/` |
+| `results/artefact/payload.json` | DVC | The numbers |
+| `results/artefact/explainer.html` | DVC | The built page |
+
+```bash
+.venv/bin/python scripts/artefact_payload.py   # results/ -> payload.json
+.venv/bin/python docs/explainer/build.py       # template + payload -> explainer.html
+```
+
+### Why the equations are MathML and not text
+
+The first version set the equations as preformatted monospace with HTML `<sub>` tags and
+hand-counted spaces. That cannot work: a `<sub>` glyph is narrower than a monospace cell,
+so a fraction bar drawn as a row of em-dashes drifts out of register with its own
+numerator, and the drift changes with the reader's font.
+
+The fix is `latex2mathml` at **build** time. MathML is native in current browsers, so the
+shipped page has no runtime dependency — which matters because the publishing target
+allows exactly one external host (Google Fonts) and would not load KaTeX or MathJax from
+a CDN. `\[ … \]` and `\( … \)` in the template are converted by `docs/explainer/mathml.py`;
+`build.py` asserts the conversion count so a mangled delimiter fails the build instead of
+shipping raw LaTeX.
+
+Two things the converter needed help with, both verified by screenshotting headless
+Chromium rather than assumed:
+
+- **`\underbrace` does not stretch.** latex2mathml emits a literal U+23DF and leaves the
+  stretching to the font's OpenType MATH table. With no math font installed the glyph
+  stays a ~19 px stub under a 200 px group. `mathml.py` strips it and the rule is drawn
+  with a CSS `border-bottom`, which is exactly as wide as its box by construction.
+- **`\langle` alone becomes an `<mi>`**, i.e. a variable, and gets variable spacing.
+  `\left\langle … \right\rangle` makes it a real fence.
+
+### Notation fixed while writing it
+
+- The residual in the additive decomposition is written **`s_ij`**, not `r_ij`. `r_ij` is
+  already the Cβ–Cβ *distance* in the frustratometeR mode table on the same page.
+- `w` (the background weight) is introduced **with Eq. 2**, which is printed in the form
+  FrustX implements — `E_ij = e_ij + (w/2)Σ e_ik + (w/2)Σ e_jl` — rather than the paper's
+  literal `w = 1` form with `w` appearing later out of nowhere.
+- Symbols inside uppercased table headers and label lanes need `text-transform:none`.
+  Without it `ρ` renders as a capital Rho, which reads as a Latin `P`, and `w` as `W`.
