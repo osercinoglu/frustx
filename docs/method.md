@@ -1361,6 +1361,10 @@ load-bearing. The *interpretation* offered here is superseded by the section abo
 
 ## Result: Rheb GDP vs GTP, the first reproduction attempt at Fig. 2's level
 
+> **SUPERSEDED — see "The Rheb result does not replicate" below.** The biological
+> claim in this section did not survive replication across two further GTPase conformer
+> pairs. It is kept verbatim rather than edited, because the way it failed is the point.
+
 1XTQ (Rheb·GDP, inactive) and 1XTS (Rheb·GTP, active), protein-only, REF2015, `w = 0`,
 500 `min` decoys each, XAdens 5 Å vicinity on CB midpoints. Figure:
 `results/fig2/rheb_profile.png`; per-residue table `results/fig2/rheb_profile_comparison.csv`.
@@ -1400,6 +1404,10 @@ estimates, so it overstates the relevant noise by √2 and is corrected:
 |---|---|---|---|
 | Δ highly | 0.550 | 0.152 | **3.6×** |
 | Δ minimally | 1.408 | 0.341 | **4.1×** |
+
+> This control is sound but measures the **wrong noise scale** for a between-structure claim
+> — see "The methodological lesson" below. It bounds decoy sampling noise, not the variation
+> between two crystals of one protein.
 
 **Spatial null.** Region means were tested against randomly placed *contiguous blocks* of the
 same lengths, not permuted residue labels — the profile is spatially autocorrelated, and
@@ -1442,6 +1450,114 @@ not established by this data.**
   never defines it.
 - This validates *spatial localisation at residue resolution*. It says nothing about any
   individual contact's Z-score, which remains unvalidatable from this paper.
+
+## The Rheb result does not replicate
+
+The section above stands as written — it is what one conformer pair showed, and I am not
+editing it away. But it named its own remedy ("only a second conformer pair can" separate
+crystallographic quality from conformation), and that remedy has now been run. It comes back
+negative.
+
+`scripts/gtpase_replication.py`. Three GDP/GTP pairs from the paper's own Fig. 2 set, chosen
+because their weaknesses are **complementary** — no single confounder is shared by all three,
+so an effect surviving all three would not be explained by any one of them:
+
+| pair | protein | strength | weakness |
+|---|---|---|---|
+| 1XTQ / 1XTS | Rheb | — | 2.00 vs 2.80 Å |
+| 1KAO / 2RAP | Rap2A | sequences identical, 0 mismatches | 1.70 vs 2.60 Å |
+| 1OIV / 1OIW | Rab11A | 1.98 vs 2.05 Å, resolution-matched | 1OIW carries Q70L, *inside* switch II |
+
+Residue 70 is additionally excluded from the Rab11A test: a mutated residue has different
+frustration by construction, so leaving it in would manufacture a signal in switch II.
+
+**Regions are derived, not eyeballed** (`scripts/gtpase_replication.py:61`). The three
+proteins are numbered differently, and hardcoding a range per structure would let me fit the
+boundaries to the answer. Instead the two sequence motifs are located and the canonical Ras
+offsets applied uniformly to all three:
+
+```python
+p = re.search(r"G.{4}GK[ST]", txt)                                    # Walker A / G1
+d = next(m.start() for m in re.finditer(r"D..G", txt) if m.start() > p.end())   # G3
+return {"P-loop":   (nums[p.start()],    nums[p.end() - 1]),          # Ras 10-17
+        "switch I": (nums[p.start()+20], nums[p.start()+28]),         # Ras 30-38
+        "switch II":(nums[d+3],          nums[d+19])}                 # Ras 60-76
+```
+
+Sanity check on the rule rather than on the answer: applied to Rheb it returns switch I 33–41
+and switch II 63–79, against the 32–41 / 63–79 used before this script existed. It reproduces
+the earlier hand choice instead of redefining it.
+
+### The numbers
+
+Joint a-priori contrast, all functional residues vs the rest, three random contiguous blocks
+of matched size, 20 000 draws — the same test as the Rheb section:
+
+| pair | d highly | p | d minimally | p |
+|---|---|---|---|---|
+| Rheb | +0.66 | 0.038 | **−1.32** | **0.010** |
+| Rap2A | **−0.56** | 0.038 | −0.07 | 0.919 |
+| Rab11A (excl. 70) | +0.00 | 1.000 | +0.22 | 0.675 |
+| **pooled** | **+0.04** | **0.858** | **−0.39** | **0.186** |
+
+Signs are inconsistent on both metrics. Rap2A does not merely fail to replicate — it
+**reverses** on `d highly`, and at nominally the same p as Rheb, which is the clearest
+possible demonstration that p = 0.038 on one pair carries no weight here. Rab11A, the one
+resolution-matched pair, is flat: +0.00 and +0.22.
+
+### The negative is not a broken run
+
+Checked before believing it. All six calculations are comparable in every global quantity:
+
+| | contacts | σ=0 dropped | highly | minimally | median F | mean vicinity |
+|---|---|---|---|---|---|---|
+| 1XTQ | 1306 | 42 | 31 | 181 | −0.056 | 32.4 |
+| 1XTS | 1305 | 32 | 34 | 185 | −0.061 | 32.1 |
+| 1KAO | 1248 | 27 | 36 | 185 | −0.045 | 31.2 |
+| 2RAP | 1281 | 28 | 26 | 187 | −0.048 | 32.2 |
+| 1OIV | 1283 | 27 | 36 | 169 | −0.050 | 32.2 |
+| 1OIW | 1264 | 19 | 35 | 172 | −0.045 | 32.2 |
+
+No run is an outlier in contact count, dropped-σ fraction, category counts, median index or
+vicinity density. The nulls are nulls, not failures.
+
+And the resolution confounder does not tidy this up either: if resolution mismatch drove the
+Rheb effect, effect size should track the gap. It does not. **Rap2A has the largest gap
+(0.90 Å) and the smallest effect on `d minimally`**, while Rheb's 0.80 Å gap gives the
+largest. No single confounder explains the pattern; the honest reading is that there is no
+effect to explain.
+
+### What is withdrawn, and what survives
+
+**Withdrawn:** "the functional elements of small GTPases shift toward frustration on
+activation." Three pairs, pooled p = 0.858 / 0.186, inconsistent signs. It is not supported.
+
+**Survives:** the Rheb *observation* — in this one protein, on these two crystals, the
+functional elements do move that way. What the replication removes is any licence to read
+that as a property of GTPase activation rather than of one crystal pair.
+
+Also unaffected: everything the Rheb section established about the *machinery* — that the
+per-residue profile is reproducible, that the two conformers' global profiles agree (r =
+0.964), that XAdens is the right vicinity rule. The pipeline works. It is the biological
+claim that does not.
+
+### The methodological lesson, which is the real result
+
+The Rheb section reported the effect as "3.6–4.1× the measured noise floor," and that floor
+was measured honestly — split each structure's own 500 decoys in half, profile each half,
+√2-correct. But it measures **decoy sampling noise only**: how much the answer moves when you
+redraw the decoys for a *fixed* structure.
+
+That is the wrong noise scale for the claim being made. The claim compares two structures, so
+the relevant variability is **between-structure** — everything that differs between two
+crystals of one protein that is not the conformational change of interest: resolution,
+refinement protocol, crystal contacts, occupancy, the modeller's choices. Decoy noise is a
+strict subset of it, and evidently a small one.
+
+The three pairs are the first actual estimate of that scale, and it is large enough to
+swallow the Rheb effect whole. **Rule going forward: a split-half decoy control licenses no
+statement about two different structures.** Any between-structure claim needs replication
+across independent structure pairs, and one pair is not evidence regardless of its p-value.
 
 ## Experiment: relaxation protocol (candidate 2)
 

@@ -36,6 +36,15 @@ per-contact specificity, which is the property FrustX exists to provide.** Repro
 publishes no per-contact value for any system, and its own Eq. 2 index is ~76%
 residue-additive by construction. See `docs/method.md`.
 
+What *is* available is the paper's Fig. 2 quantity — a per-residue 5 Å vicinity count,
+whose "vicinity" rule was recovered and verified bit-for-bit against frustratometeR. That
+pipeline runs (`scripts/fig2_profile.py`, `scripts/vicinity_profile.py`) and reproduces
+sensible profiles on six small-GTPase structures. The *biological* reading first drawn from
+it — that GTPase functional elements shift toward frustration on activation — **did not
+replicate** across two further conformer pairs (pooled p = 0.86 / 0.19, inconsistent signs;
+`scripts/gtpase_replication.py`). The machinery is validated at residue resolution; the
+claim is withdrawn. See `docs/method.md`.
+
 ## Setup on a new machine
 
 Requires Python ≥ 3.11 and ~4 GB of disk (PyRosetta is 3.2 GB).
@@ -53,7 +62,7 @@ python3 -m venv .venv
 PATH=".venv/bin:$PATH" .venv/bin/python -m pip install pyrosetta-installer
 PATH=".venv/bin:$PATH" .venv/bin/python -c "import pyrosetta_installer; pyrosetta_installer.install_pyrosetta(serialization=True)"
 
-.venv/bin/python -m pytest tests/ -q     # 40 tests; all but tests/test_contacts.py need PyRosetta
+.venv/bin/python -m pytest tests/ -q     # 45 tests; all but tests/test_contacts.py need PyRosetta
 ```
 
 ### Data (DVC + GCS)
