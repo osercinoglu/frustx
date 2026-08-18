@@ -532,10 +532,20 @@ differently from AWSEM. Right distribution, different assignment.
 candidates, in the order worth testing:
 
 1. **Decoy locality.** We shuffle the entire sequence, so a decoy energy for contact
-   (i,j) depends on every other position too. The AWSEM configurational decoy randomises
-   the identities and geometry *of the contacting pair*, holding the rest native — a far
-   more local perturbation. The atomistic paper does specify whole-sequence shuffling, but
-   the two are not statistically equivalent.
+   (i,j) depends on every other position too. AWSEM's decoys change at most two residue
+   identities. The atomistic paper does specify whole-sequence shuffling, but the two are
+   not statistically equivalent.
+
+   > **CORRECTION (this sentence was wrong as first written).** It previously said the
+   > configurational decoy "randomises the identities and geometry *of the contacting
+   > pair*, holding the rest native". Neither half is right. Read from
+   > `results/reference/awsem_source/fix_backbone.cpp:5256-5271`, the configurational
+   > decoy does not perturb the pair's geometry — it **replaces** it, drawing `r_ij` from
+   > a randomly chosen *different* pair elsewhere in the protein that happens to be in
+   > contact, and then drawing `rho_i` and `rho_j` from a **second, independent** random
+   > pair (so the distance and the two burial densities do not even come from the same
+   > place). What is held native is the rest of the *sequence*, not the geometry. The
+   > accurate contrast is in "What the three modes actually randomise" below.
 2. **Relaxation.** These runs used `protocol="min"`. The default `"relax"` may change the
    decoy spread substantially, and σ is Eq. 1's denominator.
 3. **Genuine method difference.** REF2015 and AWSEM are different force fields, and the
@@ -1699,3 +1709,50 @@ support a conclusion about decoy locality. That claim needs re-running with rank
 endpoints and a matched shell-restricted native reference, or dropping.
 
 `DEFAULT_READOUT = "pair"` stays. The flag is `--readout {pair,neighbourhood}`, diagnostic.
+
+## What the three modes actually randomise, read from the source
+
+Recorded because this document twice described frustratometeR's null from its papers'
+prose and got it wrong, and because the FrustX-vs-fR comparison cannot be interpreted
+without it. Everything here is read from
+`results/reference/awsem_source/fix_backbone.cpp` (the AWSEM source that builds the
+LAMMPS binary frustratometeR ships), not from a paper.
+
+| | `r_ij` | `rho_i`, `rho_j` | identities | rest of sequence | readout scope |
+|---|---|---|---|---|---|
+| **configurational** | **replaced** — drawn from a random *other* in-contact pair (`:5257-5266`) | **replaced** — from a *second, independent* random pair (`:5268-5271`) | random | native | pair only (`:5210-5212`) |
+| **mutational** | native (`:5275`) | native (`:5276-5277`) | random | native | pair **+ all (i,k), (j,k)** (`:5215-5243`, `:5297-5310`) |
+| **singleresidue** | n/a | native | random, residue i only | native | i's whole neighbourhood |
+
+Two consequences that were not previously written down.
+
+**Configurational does not hold geometry native.** It replaces `r_ij` wholesale with the
+distance of some unrelated contacting pair, and then draws the two burial densities from a
+*different* random pair again — so in a single configurational decoy the distance and the
+two densities need not come from the same place in the protein, or from each other's. This
+is a much more violent null than "perturb the pair", and it is why the configurational
+index behaves as a rescaled energy rather than a per-contact Z-score (recorded earlier).
+
+**Identities are drawn with replacement; FrustX permutes.** Both modes pick an identity as
+`get_residue_type(get_random_residue_index())`, and
+
+```c
+int FixBackbone::get_random_residue_index()
+{
+  int index;
+  index = rand() % n;      // fix_backbone.cpp:5550-5555
+  return index;
+}
+```
+
+Two independent draws. So frustratometeR samples i.i.d. from the native composition, and
+the two positions of a contact are **independent**. FrustX shuffles
+(`frustx/decoys.py:59-67`), which is sampling **without** replacement: the composition is
+reproduced exactly rather than in expectation, and positions are weakly negatively
+dependent (the indicator correlation is exactly −1/(L−1), a 0.6% effect at L ≈ 170).
+
+The dependence is negligible and is **not** worth engineering around. What matters is that
+the two tools' nulls agree only in their marginal, and the docstring at
+`frustx/decoys.py:21-23` — which justifies shuffling by appeal to the paper's "native amino
+acid frequency distribution" — should not be read as claiming the reference implementation
+does the same thing. It does not.

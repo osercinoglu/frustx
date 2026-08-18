@@ -22,6 +22,15 @@ Why shuffling rather than random mutation: a permutation preserves the native am
 composition exactly, which is what satisfies the paper's "sequence space is randomly
 sampled according to the native amino acid frequency distribution".
 
+NOT what frustratometeR does, despite the similar-sounding justification. Its decoys draw
+each identity as `get_residue_type(rand() % n)` -- i.i.d. WITH replacement, two independent
+draws per contact (AWSEM fix_backbone.cpp:5550-5555). A permutation reproduces the native
+composition exactly and makes the two positions weakly dependent; their scheme reproduces
+it only in expectation and keeps the positions independent. The difference is small
+(indicator correlation -1/(L-1), ~0.6% at L~170) and is not worth engineering around, but
+the two nulls are not the same and the comparison should not be described as if they were.
+See "What the three modes actually randomise" in docs/method.md.
+
 Two score functions are in play and they are not interchangeable:
 
   * `sf_pack` KEEPS fa_rep.  It builds the structure, and fa_rep is the only thing
