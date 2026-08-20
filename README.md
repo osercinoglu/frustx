@@ -137,4 +137,12 @@ minimally frustrated, matching frustratometeR's convention (the paper's Eq. 1 us
 opposite sign; see `docs/method.md`).
 
 Roughly 12 min per 1000 decoys on a 76-residue protein with `--protocol min`, ~1 h with
-`relax`.
+`relax`. Progress goes to **stderr**, so it never contaminates a redirected stdout:
+
+```
+  decoys ████████████░░░░░░░░░░░░░░  48%  478/1000  28m41s elapsed, 31m18s left
+```
+
+The ETA extrapolates the mean time per completed decoy. When stderr is not a terminal the
+same information is written as plain lines at each 10% mark instead, since a log file full
+of carriage returns is one unreadable line. `--quiet` silences all of it.

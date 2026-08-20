@@ -18,11 +18,13 @@ import time
 from pathlib import Path
 
 from frustx import __version__
-# Only frustx.config at module scope: it is import-free by design, so `frustx --help`
-# and `--version` stay instant. Everything that touches PyRosetta is imported in main().
+# Only frustx.config and frustx.progress at module scope: both are stdlib-only by
+# design, so `frustx --help` and `--version` stay instant. Everything that touches
+# PyRosetta is imported in main().
 from frustx.config import (DEFAULT_BACKGROUND_WEIGHT, DEFAULT_CUTOFF,
                           DEFAULT_N_DECOYS, DEFAULT_READOUT, READOUT_SCOPES,
                           CONTACT_ATOMS, DEFAULT_CONTACT_ATOM, RELAX_PROTOCOLS)
+from frustx.progress import Reporter
 
 
 def build_parser():
@@ -114,12 +116,9 @@ def main(argv=None):
         print(f"{args.structure.name}: {pose.total_residue()} residues, "
               f"{args.decoys} decoys, protocol={args.protocol}", file=sys.stderr)
 
-    def progress(done, total):
-        if not args.quiet:
-            # \r keeps this to one line; the final newline is printed after the loop.
-            print(f"\r  decoy {done}/{total}", end="", file=sys.stderr, flush=True)
-
-    started = time.time()
+    # Constructed here because the ETA counts from the reporter's own clock, and
+    # this is where the run begins.
+    reporter = Reporter(enabled=not args.quiet)
     result = compute_frustration(
         pose,
         # Structures are BUILT with fa_rep (it is what stops rotamers overlapping) and
@@ -138,11 +137,10 @@ def main(argv=None):
         n_jobs=args.jobs,
         packing_seed=args.packing_seed,
         jran_base=args.jran_base,
-        progress=progress,
+        progress=reporter,
     )
-    elapsed = time.time() - started
-    if not args.quiet:
-        print(file=sys.stderr)
+    elapsed = time.time() - reporter.started
+    reporter.finish()
 
     contacts = contact_table(result)
     # Recorded because it is the single number saying whether this run's index can support
