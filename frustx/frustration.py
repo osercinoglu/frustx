@@ -205,6 +205,48 @@ def contact_coords_from_pose(pose, atom=DEFAULT_CONTACT_ATOM):
     return np.array(out)
 
 
+def heavy_atom_coords_from_pose(pose):
+    """All heavy-atom coordinates, packed, plus each residue's slice.
+
+    Returns (coords, offsets): coords is (A, 3) with every residue's heavy atoms
+    concatenated in pose order, offsets is (n + 1,) so residue i owns
+    coords[offsets[i]:offsets[i+1]]. Ragged rather than padded because atom counts vary
+    by an order of magnitude -- glycine has 4 heavy atoms, ATP has 33 -- and padding
+    would need a sentinel that every consumer then has to remember to mask.
+
+    Rosetta orders heavy atoms FIRST within a residue, so nheavyatoms() is a prefix
+    count and no per-atom hydrogen test is needed. Verified by probe rather than taken
+    from the documentation.
+
+    This is what a ligand contact rule is built on: a ligand has no CA and no CB, so the
+    only geometry it shares with a protein residue is atom positions.
+    """
+    coords, offsets = [], [0]
+    for i in range(1, pose.total_residue() + 1):
+        r = pose.residue(i)
+        for k in range(1, r.nheavyatoms() + 1):
+            coords.append(np.array(r.xyz(k)))
+        offsets.append(len(coords))
+    return np.asarray(coords, dtype=np.float64), np.asarray(offsets, dtype=np.intp)
+
+
+def residue_kinds_from_pose(pose):
+    """Per-residue kind flags, aligned to pose numbering.
+
+    Returns a boolean array, True where the residue is a polymer amino acid. The
+    per-kind contact rule needs exactly this: protein-protein pairs keep the paper's
+    CA-CA criterion, and any pair involving something else has to fall back to a
+    heavy-atom minimum, because the paper's criterion is not merely wrong for a ligand,
+    it is undefined.
+
+    is_protein() rather than not is_ligand(): waters, ions and virtual residues are all
+    "not protein" but are not ligands either, and lumping them in would silently give a
+    water the same treatment as a drug.
+    """
+    return np.array([pose.residue(i).is_protein()
+                     for i in range(1, pose.total_residue() + 1)], dtype=bool)
+
+
 def contact_energy_matrix(pose, sf_measure, background_weight=DEFAULT_BACKGROUND_WEIGHT):
     """Contact energies for a pose:
 

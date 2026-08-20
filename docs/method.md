@@ -2593,3 +2593,58 @@ diagnosis above.
 **Not built:** a general caching layer. Nothing here decides what to recompute — it only
 answers "were these produced under the same settings as those?". FrustX has exactly one
 artefact today that outlives a run, and that is the checkpoint.
+
+### Tier-2, part 2: superset geometry, and two bugs found on the way
+
+**What was NOT done, and why.** The recon's framing was "CA/CB/heavy-min in one distance
+pass rather than three". On inspection that framing is wrong for the shared-work reason it
+implies: CA, CB and heavy-min are *different* computations over *different* coordinate
+sets, so there is no common subexpression to hoist. The real waste is repeated selection —
+`scripts/contact_definition.py` sweeps cutoffs 10.0 / 9.5 / 9.0 over seven structures and
+calls `contact_pairs` each time, paying for 21 full distance passes where 7 would do.
+Nothing about a cutoff changes the distances.
+
+So `ContactGeometry` computes distances once per *definition* and makes selection cheap,
+rather than pretending three definitions share arithmetic they do not.
+
+**`contact_pairs` was deliberately left alone.** `tests/test_contact_atom.py:44` pins that
+it takes coordinates and never an atom name, and every one of the eleven callers in
+`scripts/` uses it that way. The selection logic was extracted into `select_pairs`, which
+takes an already-computed matrix; `contact_pairs` is now a thin wrapper. Definitions are
+columns rather than an argument to one rule because they are genuinely not
+interchangeable: CA and CB are per-residue representative *points*, heavy-min is a
+*minimum over atom pairs*, and a mixed protein/ligand structure needs both at once.
+
+**`min_heavy_distances` is the piece tier 3 needs.** It is also the only quantity here
+that is not n²: at ~8 heavy atoms per residue, a full atom-atom matrix is 512 MB at
+n=1000 and ~13 GB at n=5000, so it is chunked over residues. The reduction is two segment
+minima via `np.minimum.reduceat`, atoms → residues along each axis in turn.
+
+One trap that would have been silent: **`reduceat` does not return the identity for an
+empty segment** — it returns the element at that index. A residue with no heavy atoms
+would therefore have reported some other residue's distance rather than raising. Refused
+explicitly.
+
+**Two real bugs found by mapping, both in `contacts.py`:**
+
+- **The O(n²) memory comment undercounted by 7×.** It costed the surviving `dist` array
+  and ignored the two temporaries: `delta` is 24n² bytes and `delta**2` another 24n²,
+  against 8n² for the result. Measured peak was **56 MB at n=1000 and 224 MB at n=2000**,
+  where the comment claimed 8 MB and "200 MB at n=5000" — the true figure there is ~1.4 GB.
+  The chunked kernel now measures 22 MB and 61 MB for the same cases, and the ratio
+  improves with n as the surviving array comes to dominate.
+- **`load_ca`'s atom validation ran after the parse loop and against a hardcoded literal.**
+  `if atom not in ("CA", "CB")` sat below the loop that had already indexed `res[atom]`, so
+  an unknown atom name that happened to exist in the structure was silently collected
+  first and only rejected at the end — and the literal was free to drift from
+  `config.CONTACT_ATOMS`, which is what `frustration.py` checks against. Both fixed.
+
+**Bit-exactness held.** The chunked kernels are checked against the naive forms they
+replace with `array_equal`, not `allclose`, because this project holds serial and parallel
+runs to bit-identical agreement and "the same to 1e-15" is not the same. `min_heavy`
+likewise matches a brute-force double loop bitwise, on ragged residues of 1 to 33 atoms.
+
+**Verified on a real ligand.** `heavy_atom_coords_from_pose` and `residue_kinds_from_pose`
+were checked against a peptide with ATP appended: heavy counts 4 for glycine and 33 for
+ATP, `is_protein` False for ATP alone, and the ligand gets finite heavy-atom distances to
+every protein residue where the CA rule gives it no coordinate at all.
