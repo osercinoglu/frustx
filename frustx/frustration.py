@@ -46,7 +46,10 @@ import numpy as np
 
 from frustx.contacts import DEFAULT_CUTOFF, Residue, contact_pairs
 from frustx.decoys import make_decoy, native_reference
-from frustx.energies import pair_energy_matrix
+from pyrosetta.rosetta.core.scoring import ScoreType
+
+from frustx.energies import (DEFAULT_WEIGHTS, make_fa_rep_score_function,
+                            pair_energy_matrix)
 
 from frustx.config import (  # constants live there so the CLI can read
     DEFAULT_BACKGROUND_WEIGHT,  # them without importing PyRosetta
@@ -72,6 +75,70 @@ class FrustrationResult:
     index: np.ndarray           # (n, n) F_ij, conventional sign
     n_decoys: int
     jran_base: int = None       # resolved per-worker RNG base; None if run serially
+
+    # The fa_rep part of the SAME readout quantity, tracked alongside rather than
+    # thrown away. sf_measure zeroes fa_rep at BUILD time, so without these the
+    # repulsive term is unrecoverable and answering "what would this look like as
+    # packing frustration?" costs a second full run of the decoy ensemble.
+    fa_rep_native: np.ndarray = None    # (n, n) R_ij of the native
+    fa_rep_mean: np.ndarray = None      # (n, n) <R_ij> over decoys
+    fa_rep_std: np.ndarray = None       # (n, n) sigma(R_ij)
+    # Cov(E, R) over the decoys. Required, not decorative: Var(E + wR) is
+    # Var(E) + w^2 Var(R) + 2w Cov(E, R), so without this term the two columns cannot
+    # be recombined into a correct sigma and the feature would only LOOK usable.
+    fa_rep_cov: np.ndarray = None       # (n, n) Cov(E_ij, R_ij)
+    # Whether sf_measure ALREADY included fa_rep, i.e. whether this is a
+    # --packing-frustration run. Recorded because index_at_fa_rep cannot otherwise
+    # tell which direction is the correcting one, and getting it backwards produces a
+    # doubled index that correlates with the true one at r = 0.99 -- the same shape and
+    # sign pattern, silently twice the scale. That survives eyeballing.
+    fa_rep_in_measure: bool = None
+
+    def index_at_fa_rep(self, weight=None):
+        """F_ij recomputed as if the measured energy had been E_ij + weight * R_ij.
+
+        `weight=None` (the default) flips the run to its complement -- the repulsive
+        term added back to a normal run, or removed from a --packing-frustration one.
+        That is the only interpretation that is right without knowing which run this is,
+        which is why the default is not a bare +1.
+
+        An explicit weight is checked against the direction the run can support. Adding
+        fa_rep to a measurement that already contains it is not a variant reading, it is
+        double counting, and the result looks entirely plausible: on the test peptide it
+        correlates with the true index at r = 0.99 with twice the scale.
+
+        Exact, not an approximation: every term is linear in the per-pair energies and
+        the variance is reconstructed from the stored covariance.
+        """
+        if self.fa_rep_native is None:
+            raise ValueError("this result carries no fa_rep decomposition")
+        if self.fa_rep_in_measure is None:
+            raise ValueError(
+                "this result does not record whether fa_rep was in the measurement, so "
+                "the correcting direction is unknown"
+            )
+        if weight is None:
+            weight = -1.0 if self.fa_rep_in_measure else +1.0
+        elif self.fa_rep_in_measure and weight > 0:
+            raise ValueError(
+                f"sf_measure already included fa_rep, so weight={weight} would count it "
+                f"twice; use a negative weight to remove it"
+            )
+        elif not self.fa_rep_in_measure and weight < 0:
+            raise ValueError(
+                f"sf_measure excluded fa_rep, so weight={weight} would subtract a term "
+                f"that is not in the energy; use a positive weight to add it"
+            )
+        mean = self.decoy_mean + weight * self.fa_rep_mean
+        var = (self.decoy_std ** 2
+               + weight ** 2 * self.fa_rep_std ** 2
+               + 2.0 * weight * self.fa_rep_cov)
+        # Clipped for the same reason the primary variance is: catastrophic
+        # cancellation can push a near-zero variance slightly negative.
+        std = np.sqrt(np.maximum(var, 0.0))
+        e0 = self.native_energy + weight * self.fa_rep_native
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return np.where(std > 0, (mean - e0) / std, np.nan)
 
 
 def residues_from_pose(pose):
@@ -298,7 +365,10 @@ def _worker_decoy(k):
     E = apply_readout(
         contact_energy_matrix(decoy, c["sf_measure"], c["background_weight"]),
         c["mask"], c["readout"])
-    return k, E
+    R = apply_readout(
+        contact_energy_matrix(decoy, c["sf_fa_rep"], c["background_weight"]),
+        c["mask"], c["readout"])
+    return k, E, R
 
 
 def compute_frustration(
@@ -318,6 +388,7 @@ def compute_frustration(
     packing_seed=None,
     jran_base=None,
     decoy_timeout=3600.0,
+    weights=DEFAULT_WEIGHTS,
     progress=None,
 ):
     """Run the full protocol and return a FrustrationResult.
@@ -392,12 +463,39 @@ def compute_frustration(
     E0 = apply_readout(
         contact_energy_matrix(native, sf_measure, background_weight), mask, readout
     )
+    # Built here, once, and inherited by the fork workers like the other two.
+    #
+    # `weights` has to be passed rather than assumed: sf_measure is a caller-supplied
+    # object and make_score_function takes its own weights argument, so
+    # compute_frustration(sf_measure=make_score_function(weights="score12")) is a legal
+    # call. score12's fa_rep weight is 0.44 against ref2015's 0.55, and picking the
+    # wrong one would make the fa_rep column 25% wrong with nothing raising.
+    sf_fa_rep = make_fa_rep_score_function(weights)
+    # When fa_rep survives in sf_measure we can actually check the two agree. When it
+    # was removed its weight is 0 and there is nothing to compare against -- hence the
+    # explicit argument above rather than relying on this.
+    measured_fa_rep = sf_measure.weights()[ScoreType.fa_rep]
+    if measured_fa_rep and measured_fa_rep != sf_fa_rep.weights()[ScoreType.fa_rep]:
+        raise ValueError(
+            f"sf_measure carries fa_rep weight {measured_fa_rep} but weights={weights!r} "
+            f"gives {sf_fa_rep.weights()[ScoreType.fa_rep]}; pass the weights set "
+            f"sf_measure was built from"
+        )
+    R0 = apply_readout(
+        contact_energy_matrix(native, sf_fa_rep, background_weight), mask, readout
+    )
 
     # Accumulate running sums rather than holding 1000 (n x n) matrices: at n=500 that
     # would be 2 GB.
     n = E0.shape[0]
     total = np.zeros((n, n))
     total_sq = np.zeros((n, n))
+    # Three more of the same shape for the fa_rep part: sum, sum of squares, and the
+    # cross term. ~6 MB extra at n=500 against the ~2 GB this accumulation already
+    # exists to avoid, so the running-sum argument is unchanged.
+    total_r = np.zeros((n, n))
+    total_sq_r = np.zeros((n, n))
+    total_cross = np.zeros((n, n))
     # Raise rather than clamp up. `-1` is joblib's "use all cores", and silently running
     # an hour-long job serially because the user typed a familiar flag -- while run.json
     # dutifully records n_jobs=-1 -- is worse than refusing.
@@ -408,10 +506,13 @@ def compute_frustration(
         )
     n_jobs = min(int(n_jobs), n_decoys)             # never fork more workers than decoys
 
-    def accumulate(k, E):
-        nonlocal total, total_sq
+    def accumulate(k, E, R):
+        nonlocal total, total_sq, total_r, total_sq_r, total_cross
         total += E
         total_sq += E * E
+        total_r += R
+        total_sq_r += R * R
+        total_cross += E * R
         seen.append(k)
         if progress is not None:
             progress(len(seen), n_decoys)
@@ -427,7 +528,10 @@ def compute_frustration(
             E = apply_readout(
                 contact_energy_matrix(decoy, sf_measure, background_weight), mask, readout
             )
-            accumulate(k, E)
+            R = apply_readout(
+                contact_energy_matrix(decoy, sf_fa_rep, background_weight), mask, readout
+            )
+            accumulate(k, E, R)
     else:
         import multiprocessing as mp
 
@@ -442,6 +546,7 @@ def compute_frustration(
             jran_base = int.from_bytes(os.urandom(4), "little") % (2 ** 31 - n_jobs - 1)
         resolved_jran_base = jran_base
         _WORKER.update(pose=native_pose, sf_pack=sf_pack, sf_measure=sf_measure,
+                       sf_fa_rep=sf_fa_rep,
                        mask=mask, seed=seed, protocol=protocol, repeats=repeats,
                        background_weight=background_weight, readout=readout,
                        packing_seed=packing_seed)
@@ -466,7 +571,7 @@ def compute_frustration(
                     it = pool.imap(_worker_decoy, batch, chunksize=1)
                     for _ in batch:
                         try:
-                            k, E = it.next(timeout=decoy_timeout)
+                            k, E, R = it.next(timeout=decoy_timeout)
                         except mp.TimeoutError:
                             pool.terminate()
                             raise RuntimeError(
@@ -474,7 +579,7 @@ def compute_frustration(
                                 f"probably died without raising (Rosetta hard-exit, "
                                 f"segfault, or OOM kill). Pool cannot detect this itself."
                             ) from None
-                        accumulate(k, E)
+                        accumulate(k, E, R)
         finally:
             _WORKER.clear()
 
@@ -491,6 +596,14 @@ def compute_frustration(
     with np.errstate(divide="ignore", invalid="ignore"):
         index = np.where(std > 0, (mean - E0) / std, np.nan)
 
+    # Same estimator as above, applied to the fa_rep part. The covariance uses the
+    # same 1/N convention as the variance, so the two recombine consistently in
+    # FrustrationResult.index_at_fa_rep; mixing 1/N and 1/(N-1) here would be a bias
+    # that only shows up at small n_decoys, which is exactly where nobody looks.
+    mean_r = total_r / n_decoys
+    var_r = np.maximum(total_sq_r / n_decoys - mean_r * mean_r, 0.0)
+    cov = total_cross / n_decoys - mean * mean_r
+
     return FrustrationResult(
         residues=residues,
         contacts=contacts,
@@ -500,6 +613,11 @@ def compute_frustration(
         index=index,
         n_decoys=n_decoys,
         jran_base=resolved_jran_base,
+        fa_rep_native=R0,
+        fa_rep_mean=mean_r,
+        fa_rep_std=np.sqrt(var_r),
+        fa_rep_cov=cov,
+        fa_rep_in_measure=bool(measured_fa_rep),
     )
 
 

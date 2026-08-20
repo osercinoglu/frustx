@@ -51,6 +51,17 @@ def contact_table(result):
         )
     df = pd.DataFrame(rows)
     if not df.empty:
+        # The fa_rep part of the same quantity, carried through so the repulsive term
+        # is a reporting choice rather than something fixed when the decoys were built.
+        # Raw parts, not a second index: recombining them needs the covariance, which
+        # lives on the result -- see FrustrationResult.index_at_fa_rep. Putting a
+        # ready-made "index with fa_rep" column here would invite the wrong arithmetic
+        # (adding two indices, or two sigmas) on the CSV downstream.
+        if result.fa_rep_native is not None:
+            ij = (result.contacts[:, 0], result.contacts[:, 1])
+            df["fa_rep_native"] = result.fa_rep_native[ij]
+            df["fa_rep_decoy_mean"] = result.fa_rep_mean[ij]
+            df["fa_rep_decoy_std"] = result.fa_rep_std[ij]
         df["frustration_class"] = classify(df["frustration_index"].to_numpy())
         d = additive_decomposition(
             df["frustration_index"].to_numpy(), result.contacts, len(result.residues)

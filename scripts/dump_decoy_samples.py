@@ -157,11 +157,16 @@ def main(pdb, out, n_decoys, protocol, n_jobs=1):
     else:
         import multiprocessing as mp
 
+        from frustx.energies import make_fa_rep_score_function
         from frustx.frustration import _WORKER, _worker_init, _worker_decoy, contact_mask
         ctx = mp.get_context("fork")
         # readout="pair" with an all-True mask: this script wants the raw contact energy
         # matrix, the same quantity the serial version stored.
+        # sf_fa_rep is required by _worker_decoy even though this script discards the
+        # fa_rep matrix below: the worker computes both parts unconditionally, and
+        # omitting the key is a KeyError raised inside a forked child, hours in.
         _WORKER.update(pose=pose, sf_pack=sf_pack, sf_measure=sf_measure,
+                       sf_fa_rep=make_fa_rep_score_function(),
                        mask=None, seed=0, protocol=protocol, repeats=1,
                        background_weight=DEFAULT_BACKGROUND_WEIGHT, readout="pair",
                        packing_seed=None)
@@ -173,7 +178,10 @@ def main(pdb, out, n_decoys, protocol, n_jobs=1):
         try:
             with ctx.Pool(n_jobs, initializer=_worker_init,
                           initargs=(jran_base, counter)) as pool:
-                for count, (k, E) in enumerate(
+                # Three-tuple: the fa_rep part is dropped here. This script's tensor
+                # is the plain measured energy, and widening its on-disk format is a
+                # separate decision from computing the extra column.
+                for count, (k, E, _) in enumerate(
                         pool.imap_unordered(_worker_decoy, todo, chunksize=1), 1):
                     record(k, E)
                     if count % 10 == 0:

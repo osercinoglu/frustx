@@ -27,14 +27,29 @@ every frustration index.
 import numpy as np
 
 import pyrosetta
-from pyrosetta.rosetta.core.scoring import EMapVector, ScoreType, methods
+from pyrosetta.rosetta.core.scoring import (EMapVector, ScoreFunction, ScoreType,
+                                            methods)
 
 # REF2015: "we employed the REF2015 version of the rosetta energy function, which has a
 # set of well-tested weights for each energy term."
 DEFAULT_WEIGHTS = "ref2015"
 
 # Rosetta is chatty and aborts on unrecognised residues; neither is useful here.
-DEFAULT_INIT_FLAGS = "-mute all -ignore_unrecognized_res"
+#
+# -in:file:load_PDB_components false is what makes -ignore_unrecognized_res mean what it
+# says. Left at its default, Rosetta silently falls back to its bundled Chemical
+# Component Dictionary and BUILDS a residue for any three-letter code it recognises --
+# so a HETATM with no .params anywhere is not ignored at all, it is admitted with
+# CCD-derived atom types and charges that nobody chose and nothing records. Verified
+# here: a bare BNZ HETATM loads as a fifth residue with the flag at its default and is
+# correctly dropped with it off. The EGFR atomfrust branch lost a run to exactly this,
+# its manifest claiming curated params for a pose that had none -- see docs/method.md.
+#
+# When ligands land properly this flag stays and the params come from an explicit
+# -extra_res_fa, which is the point: parametrisation should be a decision, not a
+# fallback.
+DEFAULT_INIT_FLAGS = ("-mute all -ignore_unrecognized_res "
+                      "-in:file:load_PDB_components false")
 
 _INITIALISED = False
 
@@ -82,6 +97,41 @@ def make_score_function(remove_fa_rep=True, weights=DEFAULT_WEIGHTS):
     if remove_fa_rep:
         sf.set_weight(ScoreType.fa_rep, 0.0)
 
+    return sf
+
+
+def make_fa_rep_score_function(weights=DEFAULT_WEIGHTS):
+    """A score function carrying ONLY fa_rep, at its REF2015 weight.
+
+    Feeding this to pair_energy_matrix yields the fa_rep-only part of e_ij, which is
+    what lets a run record the repulsive term SEPARATELY instead of destroying it.
+
+    The alternative -- score once with fa_rep present and subtract it at extraction --
+    was measured and rejected: it perturbs the surviving terms by ~1 ULP (2.2e-16
+    relative), and this project deliberately holds serial and parallel runs to
+    BIT-identical agreement rather than ~1e-12 (see the ordered-imap note in
+    compute_frustration and docs/method.md). Paying one extra scoring pass keeps every
+    existing number exactly as it was. That pass costs ~3.2 ms against a ~700 ms decoy,
+    i.e. ~0.5%, which is why it is unconditional rather than behind a flag.
+
+    Built empty and given one weight rather than built from ref2015 and stripped: the
+    stripping version has to enumerate every other ScoreType correctly, and a term
+    missed there would silently contaminate the "fa_rep" column.
+
+    The weight is READ from the real REF2015 function rather than written as 0.55, so it
+    cannot drift from whatever the weights file actually says.
+    """
+    w = pyrosetta.create_score_function(weights).weights()[ScoreType.fa_rep]
+    if w == 0.0:
+        # An empty ScoreFunction scores everything as zero, so pair_energy_matrix would
+        # return an all-zero matrix and the whole fa_rep column would read as "this
+        # structure has no repulsion" rather than as a misconfiguration.
+        raise ValueError(
+            f"weights set {weights!r} has fa_rep weight 0, so there is no repulsive "
+            f"term to isolate"
+        )
+    sf = ScoreFunction()
+    sf.set_weight(ScoreType.fa_rep, w)
     return sf
 
 

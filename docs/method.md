@@ -2429,3 +2429,106 @@ contact definitions as columns, so CA/CB/heavy-min are one distance pass rather 
 **Tier 3 — only if we commit to ligands properly:** vendoring `molfile_to_params.py` plus
 `rosetta_py/`. Be warned it is Python-2-era — `open(f, 'rU')` raises on 3.12, and their
 `environment.yml` pins 3.10 for this reason.
+
+### Tier-1 ports: what was actually implemented, and what turned out to be unnecessary
+
+Working through the tier-1 list above. Two of the four landed as changes, one was already
+solved here, and one had to be done differently than the recon suggested.
+
+**1. Contact rule / NaN.** Done, but narrower than billed. FrustX never *produces* a NaN
+coordinate today: `load_ca` drops CA-less residues (deliberately, and tested at
+`tests/test_contacts.py:104`) and the pose path raises. So this was a latent hazard, not a
+live wrong answer, and the fix is a guard in `contact_pairs` rather than a rewrite of the
+contact rule. `np.nan <= cutoff` is `False` with no warning, so a NaN placeholder would
+have removed a residue from the contact set while the run reported a clean result.
+`isfinite`, not `isnan`: an `inf` coordinate compares *True* and would invent contacts
+with everything. The pose-side error now names *which* residue rather than leaving
+Rosetta's `ResidueType HOH does not have an atom CA`.
+
+**2. RNG reseeding — already done here, and done better.** The recon recommended copying
+atomfrust's three-way reseed. Checking first: `_seed_packer` (`frustx/frustration.py:253`)
+already reseeds `pyrosetta.rosetta.numeric.random.rg()` per decoy in both the serial
+(`:423`) and parallel (`:295`) paths, `_worker_init` gives each worker its own `-jran`
+stream, and `decoys.py:139` uses an explicit `random.Random(seed)` *instance* rather than
+reseeding the global module — which is the stronger pattern, since nothing else in the
+process can perturb it. `np.random` is not used in the decoy path at all. **No change
+made.** Recorded because "port the reseeding" would otherwise look like an outstanding
+task forever.
+
+**3. `-in:file:load_PDB_components false`.** Done, in `DEFAULT_INIT_FLAGS`
+(`frustx/energies.py:47`), and it propagates to workers automatically because
+`_worker_init` reuses that constant rather than a copy.
+
+The flag matters more than it sounds. Reproduced on FrustX's own defaults: a bare `BNZ`
+HETATM, with **no `.params` file anywhere in this repo**, loads as a real fifth residue —
+Rosetta falls back to its bundled Chemical Component Dictionary and builds it with atom
+types and charges nobody chose. `-ignore_unrecognized_res` does not ignore it. With the
+flag, it is dropped, which is the honest outcome when we have no parameters for it.
+`tests/test_init_flags.py` asserts both halves in subprocesses, since Rosetta's init is
+once-per-process and the point is to compare two settings.
+
+**4. Splitting `e_direct` from `e_fa_rep` — done, but NOT the way atomfrust does it.**
+
+atomfrust scores once with `fa_rep` present and subtracts at extraction. Measured here,
+that route perturbs the surviving terms by ~1 ULP (2.2e-16 relative). That is normally
+irrelevant, and here it is not: this project deliberately holds serial and parallel runs
+to **bit-identical** agreement rather than ~1e-12 (see the ordered-`imap` note), and every
+existing number would have shifted in the last bit.
+
+So instead: a second, `fa_rep`-only score function (`make_fa_rep_score_function`,
+`frustx/energies.py`) and a second scoring pass. Cost measured at **3.2 ms against a
+~700 ms decoy, ~0.5%**, which is why it is unconditional rather than behind a flag. The
+default index is bit-identical to before the change, verified by running the pre-change
+code from a git worktree and comparing arrays.
+
+**The covariance is the part that is easy to get wrong.** Two columns alone do not let
+anyone recombine, because
+
+    Var(E + wR) = Var(E) + w² Var(R) + 2w Cov(E, R)
+
+so `FrustrationResult` carries `fa_rep_cov` as well, accumulated as a running `sum(E·R)`
+with the same 1/N convention as the variance. `index_at_fa_rep(weight)` then reconstructs
+the index exactly. The sign is the caller's, because it depends on what `sf_measure` did:
+`+1` adds the term back to a default run, `-1` removes it from a `--packing-frustration`
+one.
+
+Validated against a *real second run* measured with `fa_rep`, not against the same
+arithmetic that produced it: **max relative difference 4e-14** over the 126 finite entries of the index
+matrix, in both directions. (126 is entries, not contacts -- the matrix is
+symmetric and the test peptide has 55 contacts.) The `contact_table` gets the raw parts as columns and deliberately *not* a
+ready-made recombined index, which would invite adding two sigmas downstream.
+
+One trap worth recording for whoever writes the next test here: the first version of this
+check used a poly-alanine peptide and showed a 2e-8 discrepancy. That was not an error in
+the recombination — poly-A decoys come out near-identical, `decoy_std` collapses to ~1e-9,
+and every index is a 0/0. Multiplying the difference back by σ gave 4.4e-16, i.e. machine
+precision. **Test the energy pipeline on a heterogeneous sequence**; a degenerate ensemble
+will manufacture alarming-looking relative errors out of nothing.
+
+**What adversarial review caught, after the above was written and passing.** Recorded
+because two of the three were silent-wrongness bugs of exactly the kind this document
+exists to accumulate.
+
+- **`index_at_fa_rep(weight=1.0)` had the wrong default half the time.** `+1` is correct
+  only when `sf_measure` removed `fa_rep`. Called on a `--packing-frustration` result it
+  double-counts — and the output does not look broken: measured on the test peptide it
+  correlates with the true index at **r = 0.99**, same signs, same shape, twice the
+  scale. `FrustrationResult` now records `fa_rep_in_measure`, the default flips the run
+  to its complement rather than assuming a direction, and an explicit weight of the
+  wrong sign raises.
+- **The `fa_rep` weight was read from `DEFAULT_WEIGHTS` while `sf_measure` is
+  caller-supplied.** `compute_frustration(sf_measure=make_score_function(weights="score12"))`
+  is a legal call, and score12's `fa_rep` weight is 0.44 against ref2015's 0.55 — a 25%
+  error in the column with nothing raising. `compute_frustration` now takes `weights` and
+  cross-checks it against `sf_measure` wherever `fa_rep` survived there to be compared.
+- **`scripts/dump_decoy_samples.py` was left behind.** It drives `_WORKER` and
+  `_worker_decoy` directly, so the new 3-tuple and the new `sf_fa_rep` key broke its
+  `n_jobs > 1` path. It fails loudly, but hours into a checkpointed run. Fixed. The
+  general lesson: `_WORKER` is a private dict with an external consumer, which is a
+  coupling worth remembering before changing that payload again.
+
+A test-quality note from the same pass, worth generalising: `assert abs(cov).max() > 1e-9`
+was **vacuous as written** — it would have passed unchanged had `index_at_fa_rep` ignored
+the covariance entirely, since it only asserts that a stored array is nonzero, not that
+anything reads it. It now recomputes the index with the cross term dropped and requires
+that version to *fail*. Asserting that a quantity exists is not asserting that it is used.
