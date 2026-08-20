@@ -86,5 +86,10 @@ per-PDB loop (`FrustX.py:23-27`).
 
 ## Scope right now
 
-Protein monomers/complexes only. **No ligand work, no packaging, no OpenMM backend** —
-all deferred by explicit decision.
+Protein monomers/complexes, **plus ligands**. Ligand work was deferred for a long time
+and is now open, on the strength of the recon in `docs/method.md` — the EGFR
+`atomfrust-implementation` branch has already paid the cost of finding out where a
+heteroatom breaks a protein-only pipeline, so we are not starting from zero. Read that
+section before touching anything ligand-shaped.
+
+Still deferred by explicit decision: **no packaging, no OpenMM backend**.

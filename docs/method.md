@@ -2281,3 +2281,151 @@ Chromium rather than assumed:
   literal `w = 1` form with `w` appearing later out of nowhere.
 - Symbols inside uppercased table headers and label lanes need `text-transform:none`.
   Without it `ρ` renders as a capital Rho, which reads as a Latin `P`, and `w` as `W`.
+
+## What the EGFR atomfrust branch already solved
+
+Recon of `osercinoglu/egfr_analysis_pipeline_withRosetta`, branch
+`atomfrust-implementation`, HEAD `efe04f1` (13 commits in the `feat(atomfrust)` series;
+the `costbio` upstream has only `main`). Surveyed with five parallel readers. **All line
+numbers below are as of `efe04f1`** and will drift; they are recorded because "somewhere
+in the contact code" is not a usable pointer.
+
+This is written down because that branch has already paid for the expensive part — not
+the code, but the knowledge of *where a heteroatom breaks a protein-only pipeline*. Each
+failure below is one we would otherwise have to rediscover by running it.
+
+Scale, for calibration: `atomfrust/` is 60 modules / 22,347 lines, `tests/` 12,679 lines,
+844 tests, 11 CLI subcommands. We are not porting that. We are porting five or six
+decisions out of it.
+
+### The five mechanics
+
+**1. The contact rule has to branch on residue kind.** `graph.py:330-340`:
+
+```python
+selected = np.where(both_protein, d[definition] <= cutoff_A, d_heavy_min <= ligand_cutoff_A)
+```
+
+Protein–protein keeps Cα–Cα ≤ 10 Å (`settings.py:149-153`); anything involving a ligand
+switches to minimum heavy-atom distance ≤ `ligand_cutoff_A`, default **6.0 Å**
+(`settings.py:154`), under a superset ceiling `heavy_cutoff_A` = 8.0 Å
+(`settings.py:116-123`).
+
+The trap this avoids is worth stating plainly, because it is silent and it is not
+ligand-specific: **a ligand has no Cα, so `d[definition]` is `NaN`, and `NaN <= 10.0` is
+`False`.** Not an error, not a warning — every protein–ligand pair simply is not in the
+contact set, and the run completes and reports a clean protein-only answer. The same
+mechanism eats a protein residue with a missing Cα.
+
+**2. One graph node per Rosetta residue, no per-fragment decomposition** (`pose.py:231-303`).
+Node identity is `(chain, resseq, icode)`. A ligand is one node, however many atoms it
+has. This is the choice that keeps Eq. 1 and Eq. 2 unchanged — see the degeneracy note
+below for the price it charges.
+
+**3. `.params` and the CCD flag.** Pose loading is `generate_nonstandard_residue_set` +
+`pose_from_file` (`pose.py:166-187`) with `-in:file:load_PDB_components false`
+(`pose.py:44-50`). With that flag left at its default, they loaded 5GMP *with no params
+file at all* and Rosetta quietly typed the atoms from its bundled Chemical Component
+Dictionary — while the run manifest recorded that curated params had been used. A
+provenance lie, not a crash.
+
+**4. Pair energy is kind-agnostic, and `fa_rep` is stored rather than subtracted.**
+`energy.py:101-106` computes `e_direct = edge.dot(weights)` for every pair regardless of
+kind, and keeps `edge[fa_rep] * fa_rep_weight` in a **separate column**;
+`effective_energy` (`:136-148`) does the subtraction at analysis time. This is strictly
+better than what FrustX does now — we subtract at measurement time, so changing our mind
+about the repulsive term means re-running the decoys.
+
+**5. Eq. 1 and Eq. 2 need no ligand branches at all.** The many-body background applies to
+ligand contacts with the same ½ weight (`energy.py:176-184`), and the Z-score
+(`analyze/zscore.py:92-99`) and the 0.78 / −1.0 class boundaries
+(`analyze/classify.py:86-124`) contain zero kind-dependent code. If the contact set and
+the pair energies are right, the index does not know a ligand is present.
+
+### Covalent ligands: bookkeeping only
+
+Anchors are read from the mmCIF `_struct_conn` records (`covalent.py:87`), the anchor
+residue is frozen (`pose.py:263-269`), and the anchor edge is forced into the graph
+(`covalent.py:262-303`). But `apply_covalent_constraints` (`covalent.py:306`) applies **no
+Rosetta constraint whatsoever**, despite the name. The geometry is held only by freezing.
+5GMP's own native structure fails their clash gate at 1.81 Å, which is what a covalent
+bond looks like to a gate that assumes non-bonded contact.
+
+### The four decoy axes, and which one works
+
+| Axis | What it randomises | Status |
+|---|---|---|
+| `null` | nothing | control |
+| `identity` | protein side-chain identity, ligand fixed | the only one wired to the CLI (`_SUPPORTED_AXES = {"identity"}`, `cli/generate_decoys.py:103`) |
+| `pose` | ligand placement, by perturbation | not docking — smina/gnina absent |
+| `chemotype` | swaps in a different ligand, MCS-aligned from DUD-E/DEKOIS/MUV | **fails its own positive control**: AUROC 0.333, 0.000 residualised |
+
+The chemotype failure is documented honestly on their side —
+`tests/test_decoys_chemotype.py:556` deliberately does not assert that the control passes.
+An AUROC of 0.333 is not noise around 0.5; it is anti-correlated, which usually means a
+sign or a ranking direction is inverted somewhere. Worth knowing before we build on that
+axis.
+
+**The 0.78 Å question is only partly answered there.** `assert_backbone_identical`
+(`decoys/identity.py:96`) `continue`s on non-protein residues, and *no test asserts that
+ligand coordinates are invariant across identity decoys*. The two mutation routes
+disagree: the default `mutation='sequential'` pushes a whole-pose `RestrictToRepacking()`
+(`identity.py:358`) and sets `movemap.set_chi(True)` globally (`identity.py:529`), so
+ligand torsions do minimise; only the `packer_task` route emits `PreventRepackingRLT`
+(`identity.py:474-478`). The drift is bounded in practice only because no `PDB_ROTAMERS`
+line is ever written into the params.
+
+### The convergent result, which is the most useful thing here
+
+Their Stage A independently rediscovered **the Eq. 2 degeneracy this document already
+records**: with the many-body background on, `e_ij` cancels out of the Z-score, R² =
+1.000000 across 38–51 structures.
+
+It is *sharper* with a ligand node than without one. Every protein–ligand contact of a
+given ligand shares the same `0.5·B_ligand` term, because they all share the ligand as one
+endpoint — so the background contributes a single constant across the entire binding site
+rather than a per-pair quantity. Two independent implementations reaching the same
+degeneracy from different directions is the strongest support yet for keeping FrustX's
+`--background-weight 0` default.
+
+### Two things not to copy
+
+- **The hydrogen and formal-charge handling in the crystal-params path.** Stripping
+  hydrogens before typing makes lapatinib's secondary amine type as `Nhis` — an acceptor,
+  where chemically it is a donor. And the CCD per-atom formal-charge column is read by
+  nobody, so a charged inhibitor is parametrised neutral. Both are silent, and both change
+  the electrostatics of exactly the contacts we would be trying to measure.
+- **`chem/protonation.py`** — 636 lines, fully tested, called by nothing.
+
+### Status of the science, stated bluntly
+
+There is **no evidence yet that a ligand-aware frustration index tracks binding affinity.**
+The prototype's own descriptors are null at n=61 (r = +0.038, p = 0.77). An encouraging
+n=19 correlation that once appeared in their `CLAUDE.md` did not survive extension to
+n=61 and has been withdrawn. Their `project_status/PROJECT_STATUS.md` predates this and is
+stale and misleading; do not read it as current.
+
+So the reason to port from that branch is **mechanical, not evidential**: it tells us how
+to make a heteroatom survive the pipeline, not that doing so will show us anything.
+
+### Port list, by cost
+
+**Tier 1 — small, no new dependencies, and none of it needs a ligand present:**
+
+1. Branch the contact rule on residue kind, and make a `NaN` distance loud rather than
+   silently `False`. This is a correctness fix for missing-Cα protein residues today,
+   independent of ligands.
+2. Store `e_direct` and `e_fa_rep` as two columns; subtract at analysis time.
+3. Reseed **all three** RNGs per decoy inside the worker (`identity.py:321-326`):
+   `random`, `np.random`, and `pyrosetta.rosetta.numeric.random.rg()`. We currently reseed
+   the first two. The third is the one that actually drives the packer.
+4. Pass `-in:file:load_PDB_components false` at init, and wrap the bare `RuntimeError`
+   Rosetta raises on a missing residue type into something that names the residue.
+
+**Tier 2 — medium:** stage-partitioned settings keyed by a `regeneration_key` sha256, so a
+settings change invalidates exactly the stages it affects; and superset-once geometry with
+contact definitions as columns, so CA/CB/heavy-min are one distance pass rather than three.
+
+**Tier 3 — only if we commit to ligands properly:** vendoring `molfile_to_params.py` plus
+`rosetta_py/`. Be warned it is Python-2-era — `open(f, 'rU')` raises on 3.12, and their
+`environment.yml` pins 3.10 for this reason.
