@@ -62,7 +62,7 @@ python3 -m venv .venv
 PATH=".venv/bin:$PATH" .venv/bin/python -m pip install pyrosetta-installer
 PATH=".venv/bin:$PATH" .venv/bin/python -c "import pyrosetta_installer; pyrosetta_installer.install_pyrosetta(serialization=True)"
 
-.venv/bin/python -m pytest tests/ -q     # 85 tests; all but tests/test_contacts.py need PyRosetta
+.venv/bin/python -m pytest tests/ -q     # 232 tests; all but tests/test_contacts.py need PyRosetta
 ```
 
 ### Data (DVC + GCS)
@@ -124,6 +124,54 @@ Useful flags:
 | `--contact-atom` | `CA` (default, the paper's definition) or `CB`, which admits far fewer pairs with no atomistic interaction |
 | `--readout` | `pair` (default) or `neighbourhood`, matching what frustratometeR sums. Diagnostic |
 | `--background-weight` | weight `w` on the Eq. 2 background term, default `0` (direct pair energy only). `w=1` is Eq. 2 as literally written, which makes the index degenerate — see `docs/method.md` |
+
+### Ligands
+
+Rosetta already knows a few dozen cofactors (ATP, ZN, MG, SAH, UDP…), and those need no
+flags at all — just leave them in the PDB. Anything else — a screening hit, a docked pose,
+a co-folding output — needs a file describing its chemistry:
+
+```bash
+# the ligand is a HETATM block in the structure; the SDF supplies only its chemistry
+frustx complex.pdb -o results/ --ligand ligand.sdf
+
+# the ligand is NOT in the structure and is appended at its own file's coordinates
+frustx apo.pdb -o results/ --ligand-placed docked_pose.sdf
+
+# several ligands, and a Rosetta .params file where auto-typing is not good enough
+frustx complex.pdb -o results/ --ligand lig_a.sdf --ligand lig_b.params
+```
+
+`.sdf`, `.mol` and `.mdl` are read directly; `.mol2` is not supported, convert it first
+(`obabel -imol2 in.mol2 -osdf -O out.sdf -h`). Atom names need not match the structure —
+they are remapped geometrically.
+
+**The ligand must carry its hydrogens.** A file with none, or with polar hydrogens only,
+is refused: Rosetta types atoms from connectivity, so a stripped ligand gets wrong types
+and charges silently. Add them first with `obabel in.sdf -osdf -O out.sdf -h -p 7.4`.
+
+Ligands enter the contact map and are never mutated, repacked or moved during decoy
+generation. Contacts involving one use a minimum heavy-atom distance instead of Cα–Cα,
+since a ligand has no Cα.
+
+| flag | what |
+|---|---|
+| `--ligand FILE` | ligand already in the structure; repeat for several |
+| `--ligand-placed FILE` | ligand appended from its own file's coordinates |
+| `--ligand-name NAME` | override the residue name a file declares, applied in order. Needed when two hits are both called `UNL` or `LIG` |
+| `--ligand-name3 XXX` | override the 3-letter code, applied in order. For `--ligand` it must match the HETATM residue name |
+| `--ligand-cutoff` | minimum heavy-atom distance for a contact involving a ligand, default 6 Å |
+| `--no-freeze-ligand` | let ligands move during decoy generation. Not recommended — decoys shuffle amino-acid identity only |
+
+Two warnings are worth acting on. A ligand reported as making **no contacts** usually means
+`--ligand-placed` was given coordinates from the wrong frame — an RCSB `_ideal.sdf` is a
+generated conformer near the origin, not a docked pose. A **typing warning** means Rosetta's
+atom types cannot represent that chemistry faithfully (it has no sp carbon, for instance);
+supply a curated `.params` file if the affected contacts matter.
+
+Passing a file whose name collides with one of Rosetta's built-in types is refused rather
+than silently preferred — drop the flag to use the curated version, or rename with
+`--ligand-name`.
 
 `contacts.csv` carries the index split into the part predictable from the two residues
 alone (`frustration_index_onebody` — burial, exposure, packing) and what is particular to

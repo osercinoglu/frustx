@@ -2813,3 +2813,231 @@ comparing EQUAL to one computed with it at its default.
 field**. A measured artefact is produced *from* decoy structures, so anything changing
 what a decoy IS must invalidate the measurement too; adding a field to one and not the
 other would let a measurement be reused across structurally different ensembles.
+
+## Novel ligands: parametrising arbitrary chemistry
+
+The ligand work up to this point assumed the ligand was one Rosetta already knows. That
+covers ATP, ZN, MG, SAH, UDP and the other coenzymes in the default `fa_standard` set,
+and it covers nothing a virtual screen or a co-folding model produces. Those are the
+actual use case: score a pocket *after* docking, on the compound that was docked.
+
+### `molfile_to_params.py` is not needed, and that was the surprise
+
+The conventional route to Rosetta parameters is `molfile_to_params.py`, which lives in the
+Rosetta source tree, is not in the PyRosetta wheel, and is licensed such that vendoring it
+into this repo would be redistribution. That was recorded as a blocker needing a licensing
+decision. It is not a blocker, because it is not needed.
+
+PyRosetta exposes Rosetta's own C++ SDF/MOL reader:
+
+```python
+from pyrosetta.rosetta.core.chemical import sdf
+mutable = sdf.convert_to_ResidueTypes("AQ4.sdf", False)[1]   # vector1, 1-INDEXED
+```
+
+which does the entire job — atom types, partial charges, connectivity, internal
+coordinates. Measured on erlotinib: `name 'AQ4', natoms 52, nheavyatoms 29,
+is_ligand True`. `pyrosetta/toolbox/load_ligand.py:96` does `import molfile_to_params`
+and is therefore dead on a stock install; that dead import is what made the tool look
+mandatory.
+
+### Registration is per-pose, and that is what makes fork work
+
+The type goes into a `PoseResidueTypeSet` layered over `fa_standard`, not into the global
+set. Three separate reasons, each independently sufficient:
+
+* The ChemicalManager's `fa_standard` set is a const owning pointer. It cannot be added to.
+* `-extra_res_fa` is honoured only at the **first** `pyrosetta.init` of a process. FrustX's
+  decoy workers re-init after fork (`frustration.py:381-384`), so a flag-based route would
+  have to be threaded into `DEFAULT_INIT_FLAGS` and would change the protein-only path.
+* Because the type travels *inside the pose*, the workers need to know nothing about
+  ligands. `DEFAULT_INIT_FLAGS` is untouched and the all-protein path is unchanged.
+
+Verified: a runtime-built type survives `fork` plus the worker's own re-init, bit-identical
+at n_jobs 2, 3 and 8.
+
+### Atom naming: the trap, and why it does not bite
+
+Rosetta matches PDB `HETATM` records to a residue type **by atom name**. An SDF carries no
+PDB atom names, so Rosetta invents `C1, C2, ...` while 1M17's HETATM block says `C13, O2,
+N4`. Nothing matches. The fix is `remap_pdb_atom_names(True)`, which matches by geometry
+instead, and the failure without it is loud rather than silent — measured:
+
+```
+remap=True  -> ligand coordinates match the HETATM block to 0.0000 A
+remap=False -> RuntimeError: too many tries in fill_missing_atoms!
+```
+
+The constructor default is already `True`. It is set explicitly anyway, because the whole
+topology mode depends on it and a default is not a guarantee.
+
+### Two indices, not one: `name` and `name3`
+
+Rosetta indexes residue types by `name` **and** by `name3`, separately, and conflating them
+is the easiest way to write this module wrong. An SDF title longer than three characters
+gets a `name3` that is only a truncation, and the truncation is not a lookup key:
+
+```
+fix/longtitle.sdf -> name='ligand_1'  name3='lig'
+prts.has_name('ligand_1') = True
+prts.has_name('lig')      = False
+prts.name_map('lig')      -> RuntimeError: The residue lig could not be generated.
+```
+
+Every real docking output has a title longer than three characters, so an implementation
+keyed on `name3` fails on all of them and works on hand-made test fixtures.
+
+The same split governs the shadowing guard. Registering a type whose name collides with a
+curated one is accepted **without complaint**, and the new type wins the lookup:
+
+```
+'ATP'  has_name=True   has_name3=True
+'SAH'  has_name=False  has_name3=True    <- a name-only guard misses this
+' ZN'  has_name=False  has_name3=True       (note the padding)
+
+fix/atpname.sdf registered without complaint; name_map('ATP').natoms() = 6
+                                             (the curated ATP has 45)
+```
+
+So a user who fetches `ATP_ideal.sdf` from RCSB would silently score the neutral tetraacid
+in place of Rosetta's fitted, charged nucleotide — in a kinase P-loop, where it matters
+most. `refuse_shadowing` checks **both** indices and refuses.
+
+### Hydrogens: a global count is not a gate
+
+Rosetta types atoms from their connectivity, so a ligand missing hydrogens is typed wrongly
+and every energy computed from it is wrong in a way nothing downstream can detect. The
+obvious gate — "does this file have any hydrogens" — is defeated by a single polar
+hydrogen, which is exactly what AutoDock and PDBQT-derived pipelines emit. All three of
+these parse without complaint:
+
+| file | H | C1 type | C1 charge | O1 type | O1 charge |
+|---|---|---|---|---|---|
+| `methanol.sdf` | 4 | CH3 | −0.234 | OH | −0.624 |
+| `methanol_polarH.sdf` | 1 | **CH1** | **+0.017** | OH | −0.553 |
+| `methanol_noH.sdf` | 0 | **CH1** | **+0.335** | **OOC** | **−0.335** |
+
+So the test is per-atom valence saturation, summing bond **orders** — a triple bond counts
+3, or erlotinib's terminal alkyne `C#CH` would be flagged as missing hydrogens. Verified to
+flag nothing across all 29 heavy atoms of erlotinib, and to catch both corrupt methanols.
+FrustX refuses rather than repairing: adding hydrogens is a choice about pH belonging to
+whoever prepared the ligand, and it would mean an RDKit or OpenBabel dependency.
+
+### Where the typing is genuinely not faithful — OPEN
+
+`fa_standard` has no sp (linear) carbon type. Erlotinib's alkyne carbons come back as
+**COO — a carboxyl carbon — carrying +0.683** where the true partial charge is near zero:
+
+```
+C1  Carbon  type=COO  q=+0.683  nH=1   (this is C#CH)
+C2  Carbon  type=COO  q=+0.683  nH=0
+```
+
+That is a ~0.7 e error on two atoms, and `fa_elec` is a pairwise product of charges, so it
+does not stay local. `check_chemistry` warns rather than refusing.
+
+**Whether it matters for a frustration index is not settled, and the argument cuts both
+ways.** The ligand is frozen and identically typed in the native and in every decoy, so a
+constant offset cancels in the Z-score of Eq. 1. But the cancellation is exact only if the
+mutated protein residue does not change how that atom is screened, and a shuffled pocket
+changes the local dielectric environment by construction. **Not resolved. Do not put a
+protein–ligand frustration index in a paper until it is.** The escape hatch for any contact
+that matters is a curated `.params` file, which registers through the same call.
+
+### Validation on the EGFR set
+
+`scripts/egfr_ligand_check.py`, output in `results/egfr_ligand/`. Four kinase-domain
+complexes with drug-like inhibitors, none of which Rosetta knows: 1M17/erlotinib,
+2ITY/gefitinib, 1XKK/lapatinib, 3POZ/TAK-285. All four load with **max coordinate
+deviation 0.0000 Å** from the structure's own HETATM block, and FrustX's protein–ligand
+contact count agrees exactly with an independent numpy calculation done from raw PDB text:
+
+| structure | ligand | heavy | chi | contacts | independent | frozen | unfrozen | serial=parallel |
+|---|---|---|---|---|---|---|---|---|
+| 1M17 | AQ4 erlotinib | 29 | 10 | 25 | 25 | 0.0000 Å | 2.7333 Å | bit-identical |
+| 2ITY | IRE gefitinib | 31 | 8 | 27 | 27 | 0.0000 Å | 1.7559 Å | bit-identical |
+| 1XKK | FMM lapatinib | 40 | 11 | 37 | 37 | 0.0000 Å | 2.3067 Å | bit-identical |
+| 3POZ | 03P TAK-285 | 38 | 12 | 37 | 37 | 0.0000 Å | 3.2515 Å | bit-identical |
+
+Every check passes on all four. The `unfrozen` column is what gives the `frozen` column its
+meaning: each inhibitor has 8–12 rotatable bonds and moves 1.8–3.3 Å once the freeze is
+lifted, so 0.0000 Å is evidence rather than a property of a ligand that could not move.
+
+One residual, unrelated to ligands: 3POZ produces 36 finite indices out of 37 ligand
+contacts. That is the `std > 0` guard, on a contact whose decoy sigma is zero — the same
+open question recorded above, now visible on the ligand face.
+
+The first version of that cross-check disagreed on 1M17, 25 against 26, and **FrustX was
+right**. CYS A 751 is modelled in two half-occupancy conformers; Rosetta keeps altloc A at
+6.017 Å, outside the 6.0 Å cutoff, while the naive numpy check pooled both altlocs and
+caught conformer B at 5.267 Å. A cross-check against raw PDB text has to filter altlocs or
+it is not measuring the same thing.
+
+### Ligands are spectators, and the control has to be able to move
+
+Ligands enter the contact map and are never mutated, repacked or moved. The machinery for
+this already existed and needed no change; what was missing was evidence that it holds for
+a type built at runtime rather than one from the curated set.
+
+The freeze measures **exactly 0.0000 Å** displacement across the native reference and every
+decoy. That number is worthless on its own, and the obvious control is degenerate on a
+hand-built fixture: methanol has `nchi=0`, so unfreezing it moves it by 1.8e-15 Å and the
+control passes with the feature deleted. A real drug fixes this — lapatinib has **11 chi
+angles**, and unfrozen it moves **2.29 Å**. So the EGFR script carries the displacement
+control and the unit tests carry a `PackerTask` assertion instead, pinned against a plain
+`RestrictToRepacking` that *does* leave the ligand packable.
+
+### Provenance
+
+`ligands` is in all four stages of `STAGE_INPUTS`, valued as a sorted list of **content
+hashes** — `--ligand hit.sdf` names a different molecule tomorrow if the screen was re-run,
+and a key over the path would happily reuse an ensemble built for the old one. Adding the
+field broke **23 tests**, which is `regeneration_key` refusing to hash a settings dict that
+omits a field it depends on, working exactly as designed. Every existing `.partial.npz`
+stops resuming; there is no migration, same as `freeze_ligand`.
+
+Separately, `ligand_cutoff` was missing from the measurement key at a neighbourhood
+readout, where the contact map enters the energies through `row_i + row_j`:
+
+```
+readout=neighbourhood, ligand_cutoff 6.0 vs 9.0
+  contacts key differs:    True
+  measurement key differs: False     <- wrong
+  (control) cutoff 10 vs 8 differs:  True
+```
+
+Fixed, with a test asserting both halves — it must *not* invalidate at `readout="pair"`,
+where `apply_readout` returns the energies untouched.
+
+One more gap closed: `scripts/dump_decoy_samples.py` builds a settings dict that **no test
+covered**, so it could sit dead while pytest was green. It had already broken twice this
+way. There is now an AST-level test asserting its keys still satisfy `STAGE_INPUTS`.
+
+### A ligand that touches nothing, found by using the feature
+
+`--ligand-placed` appends a ligand at the coordinates its own file carries, which is the
+post-docking case. Fed an RCSB `_ideal.sdf` it produced **zero protein-ligand contacts and
+no error** -- the run completed and reported a perfectly clean protein-only answer, which
+is precisely the failure class the kind-aware contact rule was written to stop.
+
+The cause is not a bug in the loading: an `_ideal.sdf` is an idealised conformer generated
+near the origin, *not* the crystallographic or docked pose. Placed correctly the same file
+is fine; placed from the wrong frame it lands nowhere near the protein. Since a genuinely
+non-contacting ligand is conceivable, this warns rather than refusing:
+
+```
+frustx: warning: ligand AQ4 at B1 makes NO contacts with the protein at
+        --ligand-cutoff 6.0 A. If this was --ligand-placed, its file's coordinates
+        are probably not the pose you meant -- an RCSB _ideal.sdf is a generated
+        conformer near the origin, not the crystallographic or docked position.
+```
+
+Verified non-vacuous: it does not fire for the same ligand in topology mode, where the
+structure supplies the pose and the contact count is 25.
+
+### Still deferred, by decision
+
+Ligand-flexible decoys and conformer libraries (decoys shuffle amino-acid identity only, so
+a ligand relaxing into a shuffled pocket answers a different question); covalent-ligand
+bookkeeping; `.mol2` input (Rosetta's reader returns an empty result for it and raises
+nothing, so it is refused by extension); RDKit/OpenBabel as dependencies.
