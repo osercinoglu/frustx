@@ -51,6 +51,7 @@ Usage:
     Re-running the same command after an interruption resumes; delete <out>.partial.npz
     to force a clean start.
 """
+import json
 import os
 import sys
 
@@ -61,6 +62,8 @@ from frustx.decoys import make_decoy, native_reference
 from frustx.energies import init_rosetta, make_score_function
 from frustx.config import DEFAULT_BACKGROUND_WEIGHT
 from frustx.frustration import contact_energy_matrix, residues_from_pose
+from frustx import provenance
+from frustx.energies import DEFAULT_INIT_FLAGS, DEFAULT_WEIGHTS
 
 
 # Every 25 decoys is ~50 s of work at the measured 'min' cost on a 169-residue protein --
@@ -68,13 +71,30 @@ from frustx.frustration import contact_energy_matrix, residues_from_pose
 # tensor stays a rounding error on the total.
 CHECKPOINT_EVERY = 25
 
+# Set by main() before any checkpoint is touched. Module-level only so the loader can
+# name which settings differ; nothing else should read it.
+_SETTINGS = {}
 
-def _load_checkpoint(path, n_decoys, n):
+
+def _load_checkpoint(path, n_decoys, n, key):
     """Return (decoys, native, done_mask) from a partial run, or (None, None, None).
 
-    A checkpoint whose shape does not match what was asked for is ignored rather than
-    trusted -- resuming a 500-decoy run into a 1000-decoy request would silently mix two
-    different requests.
+    The shape check alone was NOT enough, and the gap was a live corruption path rather
+    than a theoretical one. It compares two numbers -- decoy count and residue count --
+    so resuming a `min` checkpoint with `relax` on the command line passed it and mixed
+    two ensembles into one tensor. Worse, `native` is loaded from the checkpoint and
+    deliberately not recomputed (see the module docstring), so E0 stayed pinned to the
+    FIRST protocol while every post-resume decoy used the second: the reference and the
+    ensemble end up prepared differently, which is the exact failure decoys.py:16-19
+    exists to prevent.
+
+    `key` is the "ensemble" regeneration key -- see frustx/provenance.py. It covers the
+    settings that determine what a decoy structure IS, which is what has to match for
+    two halves of a tensor to belong together.
+
+    A checkpoint written before this check existed carries no key. It is refused rather
+    than accepted, because "no key" is indistinguishable from "written under different
+    settings", and the whole point here is to stop guessing.
     """
     if not os.path.exists(path):
         return None, None, None
@@ -84,6 +104,18 @@ def _load_checkpoint(path, n_decoys, n):
         if d["decoys"].shape != (n_decoys, n, n) or done.shape != (n_decoys,):
             print(f"ignoring {path}: shape mismatch", flush=True)
             return None, None, None
+        old_key = str(d["regeneration_key"]) if "regeneration_key" in d else None
+        if old_key != key:
+            what = "predates the settings check" if old_key is None else "settings differ"
+            print(f"REFUSING to resume {path}: {what}.", flush=True)
+            if old_key is not None and "settings" in d:
+                for line in provenance.describe_mismatch(
+                        json.loads(str(d["settings"])), _SETTINGS, "ensemble"):
+                    print(f"    {line}", flush=True)
+            print("    Delete it to start over, or fix the command line.", flush=True)
+            # sys.exit, not "start fresh": silently overwriting hours of decoys because
+            # a flag was mistyped is the more expensive mistake of the two.
+            sys.exit(1)
         print(f"resuming from {path}: {done.sum()}/{n_decoys} decoys already done",
               flush=True)
         return d["decoys"], d["native"], done
@@ -104,7 +136,24 @@ def main(pdb, out, n_decoys, protocol, n_jobs=1):
 
     n = pose.total_residue()
     partial = str(out) + ".partial.npz"
-    decoys, native, done = _load_checkpoint(partial, n_decoys, n)
+
+    # The settings that decide what a decoy structure IS. This script hardcodes several
+    # of them (seed=k per decoy, repeats=1, readout="pair", background_weight at its
+    # default), so they are written out literally rather than plumbed -- but they are
+    # written out, because a later edit to any of them must invalidate old checkpoints.
+    global _SETTINGS
+    _SETTINGS = {
+        "structure_key": provenance.file_key(pdb),
+        "init_flags": DEFAULT_INIT_FLAGS,
+        "weights": DEFAULT_WEIGHTS,
+        "protocol": protocol,
+        "repeats": 1,
+        "seed": 0,
+        "n_decoys": n_decoys,
+        "packing_seed": None,
+    }
+    key = provenance.regeneration_key(_SETTINGS, "ensemble")
+    decoys, native, done = _load_checkpoint(partial, n_decoys, n, key)
 
     if decoys is None:
         # The native goes through the same repack as the decoys -- comparing an
@@ -132,7 +181,12 @@ def main(pdb, out, n_decoys, protocol, n_jobs=1):
         # Write to a temp path and rename: a kill DURING the checkpoint write would
         # otherwise leave a truncated file where a good one used to be.
         tmp = partial + ".tmp.npz"
-        np.savez_compressed(tmp, decoys=decoys, native=native, done=done, **labels)
+        # The key and the settings that produced it travel WITH the tensor. Storing the
+        # key alone would make a mismatch undiagnosable -- you would know the checkpoint
+        # was wrong without knowing which flag to fix.
+        np.savez_compressed(tmp, decoys=decoys, native=native, done=done,
+                            regeneration_key=key, settings=json.dumps(_SETTINGS),
+                            **labels)
         os.replace(tmp, partial)
 
     def record(k, E):

@@ -2532,3 +2532,64 @@ was **vacuous as written** — it would have passed unchanged had `index_at_fa_r
 the covariance entirely, since it only asserts that a stored array is nonzero, not that
 anything reads it. It now recomputes the index with the cross term dropped and requires
 that version to *fail*. Asserting that a quantity exists is not asserting that it is used.
+
+### Tier-2, part 1: regeneration keys, and the resume bug they were written for
+
+The tier-2 item was "stage-partitioned settings keyed by a `regeneration_key` sha256".
+Mapping the repo first turned up a live corruption path rather than a hypothetical one,
+which decided the shape of the work.
+
+**The bug.** `scripts/dump_decoy_samples.py` resumed a checkpoint after validating its
+SHAPE and nothing else — decoy count and residue count, two integers. So resuming a `min`
+checkpoint with `relax` on the command line passed the check and mixed two ensembles into
+one tensor. Worse: `native` is loaded from the checkpoint and deliberately *not*
+recomputed (there is a good reason — recomputing it draws from an unseeded global RNG and
+would silently give a different E0 for the second half of the run), so the reference
+stayed pinned to the first protocol while every post-resume decoy used the second. The
+reference and the ensemble end up prepared differently, which is exactly the failure
+`frustx/decoys.py:16-19` exists to prevent, reintroduced at the resume boundary.
+
+**Stages are partitioned because the settings genuinely differ per stage.** From tracing
+`compute_frustration`, not from the CLI's flag list — the two disagree:
+
+| Stage | Reads |
+|---|---|
+| `structure` | structure content, init flags |
+| `contacts` | + contact_atom, cutoff, min_seq_sep |
+| `ensemble` | structure, init flags, weights, protocol, repeats, seed, n_decoys, packing_seed |
+| `measurement` | all of `ensemble`, + background_weight, readout, packing_frustration |
+
+`ensemble` is the expensive stage (~700 ms per decoy) and reads a **strictly smaller** set
+than `measurement`. So changing `--readout` must not invalidate decoy structures, and the
+test asserts that equality as hard as it asserts the inequalities — a key that
+over-invalidates is not safe, it is just useless, because it discards expensive work.
+
+**One dependency is conditional and a static table would get it wrong.** At the default
+`readout="pair"`, `apply_readout` returns `E` untouched, so the contact map never reaches
+the energies and `cutoff` / `min_seq_sep` / `contact_atom` are *not* measurement inputs.
+At `readout="neighbourhood"` they are. `regeneration_key` resolves that at call time.
+
+**Details that are load-bearing:**
+
+- **A missing setting raises rather than defaulting.** This is the one way the module
+  could actively cause the bug it prevents: a key computed over a silently absent field
+  compares EQUAL to one computed with the field present at its default.
+- **The structure is keyed by content, not path.** Two runs against different edits of the
+  same filename are otherwise indistinguishable, and a path proves nothing about what was
+  in the file.
+- **A keyless checkpoint is refused, not trusted.** Files written before the guard existed
+  carry no key, and "no key" is indistinguishable from "written under different settings".
+- **A mismatch exits rather than starting fresh.** Silently overwriting hours of decoys
+  because a flag was mistyped is the more expensive of the two mistakes. Verified: exit
+  code 1, checkpoint preserved on disk, no output written.
+- **The settings travel with the key** in the `.npz`, so the refusal can print
+  `protocol: 'min' -> 'relax'`. A comparison can only say yes or no; that is not enough to
+  decide whether to delete the file or fix the command line.
+
+Verified end to end, not only in unit tests: a real run interrupted after 4 of 8 decoys
+resumes correctly under the same protocol, and refuses under a changed one with the
+diagnosis above.
+
+**Not built:** a general caching layer. Nothing here decides what to recompute — it only
+answers "were these produced under the same settings as those?". FrustX has exactly one
+artefact today that outlives a run, and that is the checkpoint.
