@@ -120,6 +120,20 @@ def contact_coords_from_pose(pose, atom=DEFAULT_CONTACT_ATOM):
     for i in range(1, pose.total_residue() + 1):
         r = pose.residue(i)
         name = atom if (atom == "CA" or r.has(atom)) else "CA"
+        if not r.has(name):
+            # Rosetta does raise here on its own, but its message is
+            # "ResidueType HOH does not have an atom CA" -- it names the residue TYPE
+            # and not WHICH residue, which in a 500-residue pose is not enough to act
+            # on. It also arrives as a bare RuntimeError out of C++, so it reads like a
+            # crash rather than an input problem. Say which residue, and why.
+            raise ValueError(
+                f"pose residue {i} ({r.name3()}) has no {name} atom, so it has no "
+                f"contact coordinate. Ligands, waters, ions and other heteroatoms have "
+                f"no backbone: either strip them from the input, or give them a contact "
+                f"rule of their own -- a ligand needs a heavy-atom-minimum distance, not "
+                f"a CA-CA one. See docs/method.md, 'What the EGFR atomfrust branch "
+                f"already solved'."
+            )
         out.append(np.array(r.xyz(name)))
     return np.array(out)
 

@@ -134,6 +134,30 @@ def contact_pairs(residues, ca_coords, cutoff=DEFAULT_CUTOFF, min_seq_sep=1):
     if n != len(ca_coords):
         raise ValueError(f"residues ({n}) and ca_coords ({len(ca_coords)}) disagree")
 
+    ca_coords = np.asarray(ca_coords, dtype=np.float64)
+
+    # A non-finite coordinate is the one input this function cannot fail loudly on by
+    # itself: `np.nan <= cutoff` is False, with no warning, so the pair is simply
+    # ABSENT from the contact set and the run goes on to report a clean answer over an
+    # incomplete map.  Nothing downstream can distinguish that from a residue that
+    # genuinely contacts nothing, so it has to be caught here or not at all.
+    #
+    # The way this arrives is a residue with no representative atom -- a ligand, a
+    # water, an ion -- given a NaN placeholder by whatever built the coordinates.  That
+    # is the natural shape of a ligand-aware coordinate builder, so this guard is what
+    # stops "we forgot to give ligands a contact rule" from looking like "the ligand
+    # touches nothing".  See docs/method.md, "What the EGFR atomfrust branch already
+    # solved", where exactly this cost a run.
+    bad = np.nonzero(~np.isfinite(ca_coords).all(axis=1))[0]
+    if bad.size:
+        shown = ", ".join(residues[k].label for k in bad[:5])
+        more = f" (and {bad.size - 5} more)" if bad.size > 5 else ""
+        raise ValueError(
+            f"non-finite contact coordinate for {bad.size} residue(s): {shown}{more}. "
+            f"A NaN coordinate would silently drop every pair involving these residues "
+            f"rather than raising, so it is rejected here."
+        )
+
     # Full pairwise distance matrix by broadcasting.  This is O(n^2) memory
     # (~8 MB at n=1000, ~200 MB at n=5000).  Fine for single chains and typical
     # complexes; if we ever hit ribosome-scale input this is the line to swap

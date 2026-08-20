@@ -8,7 +8,7 @@ the code that is under test.
 import numpy as np
 import pytest
 
-from frustx.contacts import contact_pairs, load_ca
+from frustx.contacts import Residue, contact_pairs, load_ca
 
 
 def _atom(serial, name, resname, chain, resseq, xyz, element="C"):
@@ -129,3 +129,69 @@ def test_empty_structure_raises(tmp_path):
     )
     with pytest.raises(ValueError, match="No standard amino-acid residues"):
         load_ca(pdb)
+
+
+def _res(index, resseq):
+    """A minimal Residue, for tests that only need labels and count."""
+    return Residue(index=index, chain="A", resseq=resseq, icode=" ", resname="ALA")
+
+
+def test_a_nan_coordinate_raises_instead_of_silently_dropping_pairs():
+    """The whole point of the guard.
+
+    `np.nan <= 10.0` is False with no warning, so without this check residue 1 would
+    simply have no contacts and the run would report a clean, wrong answer over an
+    incomplete map. Nothing downstream can tell that apart from a residue that
+    genuinely touches nothing, so it has to raise here.
+    """
+    residues = [_res(0, 1), _res(1, 2), _res(2, 3)]
+    coords = np.array([[0.0, 0.0, 0.0],
+                       [np.nan, np.nan, np.nan],   # e.g. a ligand with no CA
+                       [5.0, 0.0, 0.0]])
+
+    # First: confirm the hazard is real, i.e. that the pair really would vanish.
+    # If numpy ever changed this, the guard would be pointless and this test says so.
+    d = np.abs(coords[:, None, 0] - coords[None, :, 0])
+    assert not (d[0, 1] <= 10.0), "NaN comparison no longer False; revisit the guard"
+
+    with pytest.raises(ValueError, match="non-finite contact coordinate"):
+        contact_pairs(residues, coords, cutoff=10.0)
+
+
+def test_the_error_names_the_offending_residues():
+    """A bare 'bad coordinate' is not actionable on a 500-residue pose."""
+    residues = [_res(0, 1), _res(1, 2)]
+    coords = np.array([[0.0, 0.0, 0.0], [np.nan, 0.0, 0.0]])
+    with pytest.raises(ValueError, match=r"A:ALA2"):
+        contact_pairs(residues, coords)
+
+
+def test_infinity_is_rejected_too():
+    """isfinite, not isnan: an inf coordinate compares True and would invent contacts
+    with everything, which is the same class of silent wrongness in the other direction."""
+    residues = [_res(0, 1), _res(1, 2)]
+    coords = np.array([[0.0, 0.0, 0.0], [np.inf, 0.0, 0.0]])
+    with pytest.raises(ValueError, match="non-finite"):
+        contact_pairs(residues, coords)
+
+
+def test_the_bad_residue_list_is_truncated():
+    """Eight bad residues must not print eight labels; five plus a count."""
+    residues = [_res(i, i + 1) for i in range(8)]
+    coords = np.full((8, 3), np.nan)
+    with pytest.raises(ValueError, match=r"and 3 more"):
+        contact_pairs(residues, coords)
+
+
+def test_a_clean_structure_is_unaffected_by_the_guard(line_pdb):
+    """The guard must not change any answer for well-formed input."""
+    residues, coords = load_ca(line_pdb)
+    assert len(contact_pairs(residues, coords, cutoff=10.0)) == 4
+
+
+def test_a_coordinate_list_is_accepted_not_just_an_array():
+    """contact_pairs is called with plain lists in scripts/, and the guard runs
+    np.isfinite, so the asarray has to happen before it."""
+    residues = [_res(0, 1), _res(1, 2)]
+    pairs = contact_pairs(residues, [[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]], cutoff=10.0)
+    assert pairs.tolist() == [[0, 1]]
