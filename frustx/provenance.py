@@ -34,13 +34,23 @@ from pathlib import Path
 # residue type set are inputs to all of them, even though neither is a CLI flag today.
 STAGE_INPUTS = {
     "structure": ("structure_key", "init_flags"),
-    "contacts": ("structure_key", "init_flags", "contact_atom", "cutoff", "min_seq_sep"),
+    "contacts": ("structure_key", "init_flags", "contact_atom", "cutoff", "min_seq_sep",
+                 "ligand_cutoff"),
     "ensemble": ("structure_key", "init_flags", "weights", "protocol", "repeats",
-                 "seed", "n_decoys", "packing_seed"),
+                 "seed", "n_decoys", "packing_seed", "freeze_ligand"),
+    # INVARIANT: measurement contains every ensemble field. A measured artefact is
+    # produced FROM decoy structures, so anything that changes what a decoy is must also
+    # invalidate the measurement. Adding a field to `ensemble` and not here would let a
+    # measurement be reused across structurally different ensembles -- silently, which is
+    # the whole class of bug this module exists to stop. Asserted below.
     "measurement": ("structure_key", "init_flags", "weights", "protocol", "repeats",
-                    "seed", "n_decoys", "packing_seed",
+                    "seed", "n_decoys", "packing_seed", "freeze_ligand",
                     "background_weight", "readout", "packing_frustration"),
 }
+
+_missing = set(STAGE_INPUTS["ensemble"]) - set(STAGE_INPUTS["measurement"])
+assert not _missing, f"measurement must include every ensemble field; missing {_missing}"
+del _missing
 
 
 def file_key(path, n_bytes=1 << 20):

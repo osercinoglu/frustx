@@ -151,6 +151,10 @@ def main(pdb, out, n_decoys, protocol, n_jobs=1):
         "seed": 0,
         "n_decoys": n_decoys,
         "packing_seed": None,
+        # This script never builds a ligand pose today, but the field is required rather
+        # than defaulted: regeneration_key raises on a missing setting precisely so a key
+        # computed without it cannot compare equal to one computed with it.
+        "freeze_ligand": True,
     }
     key = provenance.regeneration_key(_SETTINGS, "ensemble")
     decoys, native, done = _load_checkpoint(partial, n_decoys, n, key)

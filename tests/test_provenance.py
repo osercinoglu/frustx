@@ -23,7 +23,8 @@ def _settings(**over):
         structure_key="deadbeef", init_flags="-mute all", weights="ref2015",
         protocol="min", repeats=1, seed=0, n_decoys=100, packing_seed=None,
         background_weight=0.0, readout="pair", packing_frustration=False,
-        contact_atom="CA", cutoff=10.0, min_seq_sep=1,
+        contact_atom="CA", cutoff=10.0, min_seq_sep=1, ligand_cutoff=6.0,
+        freeze_ligand=True,
     )
     base.update(over)
     return base
@@ -64,7 +65,7 @@ def test_the_contact_map_enters_the_measurement_only_at_neighbourhood_readout():
 
 @pytest.mark.parametrize("field", ["protocol", "repeats", "seed", "n_decoys",
                                    "weights", "structure_key", "init_flags",
-                                   "packing_seed"])
+                                   "packing_seed", "freeze_ligand"])
 def test_every_ensemble_input_actually_moves_the_key(field):
     """Guards against a field being listed in STAGE_INPUTS but silently unused -- e.g.
     if the digest were taken over a hardcoded subset."""
@@ -151,3 +152,22 @@ def test_every_stage_is_hashable_with_a_full_settings_dict():
     _settings() does not supply would fail here rather than at the call site."""
     for stage in STAGE_INPUTS:
         assert len(regeneration_key(_settings(), stage)) == 64
+
+
+def test_measurement_contains_every_ensemble_field():
+    """A measured artefact is produced FROM decoy structures, so anything that changes
+    what a decoy IS must invalidate the measurement too. Adding a field to `ensemble` and
+    forgetting it here would let a measurement be reused across structurally different
+    ensembles, silently."""
+    assert set(STAGE_INPUTS["ensemble"]) <= set(STAGE_INPUTS["measurement"])
+
+
+def test_freeze_ligand_invalidates_both_stages():
+    a, b = _settings(freeze_ligand=True), _settings(freeze_ligand=False)
+    for stage in ("ensemble", "measurement"):
+        assert regeneration_key(a, stage) != regeneration_key(b, stage)
+
+
+def test_ligand_cutoff_invalidates_the_contact_map():
+    a, b = _settings(ligand_cutoff=6.0), _settings(ligand_cutoff=7.0)
+    assert regeneration_key(a, "contacts") != regeneration_key(b, "contacts")

@@ -44,7 +44,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from frustx.contacts import DEFAULT_CUTOFF, Residue, contact_pairs
+from frustx.contacts import (DEFAULT_CUTOFF, Residue, contact_pairs,
+                            min_heavy_distances, pairwise_distances,
+                            select_pairs_by_kind)
 from frustx.decoys import make_decoy, native_reference
 from pyrosetta.rosetta.core.scoring import ScoreType
 
@@ -55,6 +57,7 @@ from frustx.config import (  # constants live there so the CLI can read
     DEFAULT_BACKGROUND_WEIGHT,  # them without importing PyRosetta
     DEFAULT_N_DECOYS,
     DEFAULT_CONTACT_ATOM,
+    DEFAULT_LIGAND_CUTOFF,
     CONTACT_ATOMS,
     DEFAULT_READOUT,
     READOUT_SCOPES,
@@ -175,7 +178,7 @@ def ca_coords_from_pose(pose):
     )
 
 
-def contact_coords_from_pose(pose, atom=DEFAULT_CONTACT_ATOM):
+def contact_coords_from_pose(pose, atom=DEFAULT_CONTACT_ATOM, missing="raise"):
     """Contact-representative coordinates, shape (n_residues, 3), aligned to pose numbering.
 
     "CB" falls back to CA wherever there is no CB -- glycine, and any residue built
@@ -187,6 +190,13 @@ def contact_coords_from_pose(pose, atom=DEFAULT_CONTACT_ATOM):
     for i in range(1, pose.total_residue() + 1):
         r = pose.residue(i)
         name = atom if (atom == "CA" or r.has(atom)) else "CA"
+        if not r.has(name) and missing == "nan":
+            # NaN, deliberately, and ONLY where a caller has said it will apply a
+            # different rule to these residues. select_pairs_by_kind never consults the
+            # protein branch for a non-protein pair, so the NaN is inert there. Anywhere
+            # else a NaN would silently drop pairs, which is why "raise" is the default.
+            out.append(np.full(3, np.nan))
+            continue
         if not r.has(name):
             # Rosetta does raise here on its own, but its message is
             # "ResidueType HOH does not have an atom CA" -- it names the residue TYPE
@@ -417,7 +427,8 @@ def _worker_decoy(k):
     c = _WORKER
     _seed_packer(c["packing_seed"], _DECOY_OFFSET + k)
     decoy = make_decoy(c["pose"], c["sf_pack"], seed=c["seed"] + k,
-                       protocol=c["protocol"], repeats=c["repeats"])
+                       protocol=c["protocol"], repeats=c["repeats"],
+                       freeze_ligand=c["freeze_ligand"])
     E = apply_readout(
         contact_energy_matrix(decoy, c["sf_measure"], c["background_weight"]),
         c["mask"], c["readout"])
@@ -445,6 +456,8 @@ def compute_frustration(
     jran_base=None,
     decoy_timeout=3600.0,
     weights=DEFAULT_WEIGHTS,
+    ligand_cutoff=DEFAULT_LIGAND_CUTOFF,
+    freeze_ligand=True,
     progress=None,
 ):
     """Run the full protocol and return a FrustrationResult.
@@ -498,12 +511,30 @@ def compute_frustration(
         raise ValueError("n_decoys must be at least 2 to estimate a standard deviation")
 
     residues = residues_from_pose(native_pose)
-    contacts = contact_pairs(
-        residues,
-        contact_coords_from_pose(native_pose, contact_atom),
-        cutoff=cutoff,
-        min_seq_sep=min_seq_sep,
-    )
+    kinds = residue_kinds_from_pose(native_pose)
+    if kinds.all():
+        # All-protein: the original call, untouched. Not merely an optimisation -- it is
+        # what guarantees every existing run stays bit-identical, since it cannot reach
+        # any of the ligand code below.
+        contacts = contact_pairs(
+            residues,
+            contact_coords_from_pose(native_pose, contact_atom),
+            cutoff=cutoff,
+            min_seq_sep=min_seq_sep,
+        )
+    else:
+        # Mixed. Protein pairs keep the paper's rule; anything else falls back to a
+        # minimum heavy-atom distance. See select_pairs_by_kind and DEFAULT_LIGAND_CUTOFF.
+        contacts = select_pairs_by_kind(
+            residues,
+            pairwise_distances(
+                contact_coords_from_pose(native_pose, contact_atom, missing="nan")),
+            min_heavy_distances(*heavy_atom_coords_from_pose(native_pose)),
+            kinds,
+            cutoff=cutoff,
+            ligand_cutoff=ligand_cutoff,
+            min_seq_sep=min_seq_sep,
+        )
 
     # The readout mask is built ONCE from the native contact map and reused for every
     # decoy. Decoys keep the native backbone, so the contact map cannot drift -- and if
@@ -515,7 +546,8 @@ def compute_frustration(
     # the index would become a mixture of incomparable references -- visible only as mild
     # extra scatter that no test would flag.
     _seed_packer(packing_seed, _NATIVE_OFFSET)
-    native = native_reference(native_pose, sf_pack, protocol=protocol, repeats=repeats)
+    native = native_reference(native_pose, sf_pack, protocol=protocol, repeats=repeats,
+                              freeze_ligand=freeze_ligand)
     E0 = apply_readout(
         contact_energy_matrix(native, sf_measure, background_weight), mask, readout
     )
@@ -579,7 +611,8 @@ def compute_frustration(
         for k in range(n_decoys):
             _seed_packer(packing_seed, _DECOY_OFFSET + k)
             decoy = make_decoy(
-                native_pose, sf_pack, seed=seed + k, protocol=protocol, repeats=repeats
+                native_pose, sf_pack, seed=seed + k, protocol=protocol, repeats=repeats,
+                freeze_ligand=freeze_ligand,
             )
             E = apply_readout(
                 contact_energy_matrix(decoy, sf_measure, background_weight), mask, readout
@@ -602,7 +635,7 @@ def compute_frustration(
             jran_base = int.from_bytes(os.urandom(4), "little") % (2 ** 31 - n_jobs - 1)
         resolved_jran_base = jran_base
         _WORKER.update(pose=native_pose, sf_pack=sf_pack, sf_measure=sf_measure,
-                       sf_fa_rep=sf_fa_rep,
+                       sf_fa_rep=sf_fa_rep, freeze_ligand=freeze_ligand,
                        mask=mask, seed=seed, protocol=protocol, repeats=repeats,
                        background_weight=background_weight, readout=readout,
                        packing_seed=packing_seed)

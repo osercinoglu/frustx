@@ -2750,3 +2750,66 @@ across the six GTPase runs have sigma <= 0.02. Changing the guard would turn tho
 finite indices into NaN — a change to published numbers and to what the tool claims, which
 is a scientific decision, not a bug fix. Recorded here for that decision to be made
 explicitly.
+
+### Tier 3: decoy generation with a ligand present
+
+The remaining blocker. `pose.sequence()` returns `Z` for ATP, `shuffle_sequence` permuted
+it like an amino acid, and `make_decoy` died with a bare `IndexError`. **The crash was the
+lucky outcome** — the same mechanism would otherwise have tried to mutate the ligand into
+an amino acid and some amino acid into ATP.
+
+**Three kinds of residue, not two.** Conflating them is how a modified residue gets
+silently mutated:
+
+| Kind | Predicate | Treatment |
+|---|---|---|
+| canonical amino acid | `type().is_canonical_aa()` | designed — the shuffle may change its identity |
+| non-canonical **protein** | protein but not canonical | identity fixed, side chain still repacks |
+| everything else | `not is_protein()` | frozen |
+
+`is_canonical_aa()` rather than `is_protein()`: a spin label like R1A reports
+`is_protein=True` and `name1 'Z'`, so it crashes `apply_sequence` exactly as a ligand does
+**with no ligand anywhere in the file**. And `is_protein()` rather than `not is_ligand()`:
+Rosetta reports `is_ligand()` **True for water**, so `is_ligand` cannot discriminate.
+
+**Freezing takes three separate mechanisms, and none is redundant:**
+
+1. `prevent_repacking()` on the packer task. `restrict_to_repacking()` alone leaves a
+   ligand *packable* — measured, not assumed.
+2. `set_chi(i, False)` on the MoveMap, for minimisation.
+3. A `TaskFactory` with `PreventRepackingRLT` for FastRelax. **The MoveMap does not bind
+   FastRelax's internal packer** — with chi explicitly off, FastRelax still repacked the
+   ligand. A future refactor that drops this "because the movemap already freezes chi"
+   reintroduces the bug, and it is invisible: the ligand simply lands in a different
+   rotamer and every energy involving it shifts.
+
+**The silent asymmetry to watch for** is freezing the decoys but not the native reference.
+`repack()` and `apply_sequence()` are separate code paths, so fixing one and not the other
+is easy, and the result is an E0 measured against an ensemble prepared differently — with
+nothing raising. Both have their own test.
+
+**`freeze_ligand` is a parameter, defaulting True, because the science is genuinely
+unsettled** — the EGFR branch's two mutation routes disagree about whether ligand torsions
+minimise, and nothing there asserts invariance. Freezing means the index answers "how
+frustrated is this protein around a ligand held where the crystal put it", which is the
+question a fixed backbone already commits us to. Letting it relax answers a different
+question and makes the decoy ensemble's ligand pose a free variable. There is a test that
+`freeze_ligand=False` **actually lets the ligand move**, so the freeze tests cannot pass
+for the wrong reason.
+
+**Verified end to end**: a full `compute_frustration` on a peptide-ATP complex produces
+protein-ligand contacts with finite indices and classifications, ligand atom displacement
+exactly 0.00 A across the native reference and every decoy, backbone unchanged, and the
+all-protein path **bit-identical** to before the change.
+
+### What the provenance work caught immediately
+
+Adding `freeze_ligand` to `STAGE_INPUTS` broke six checkpoint tests at once, because
+`regeneration_key` raises on a missing setting rather than defaulting. That is the module
+behaving exactly as designed — the alternative is a key computed without the field
+comparing EQUAL to one computed with it at its default.
+
+`STAGE_INPUTS` now also asserts at import that **`measurement` contains every `ensemble`
+field**. A measured artefact is produced *from* decoy structures, so anything changing
+what a decoy IS must invalidate the measurement too; adding a field to one and not the
+other would let a measurement be reused across structurally different ensembles.
