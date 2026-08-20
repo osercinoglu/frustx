@@ -32,19 +32,27 @@ from pathlib import Path
 #
 # `weights` and `init_flags` appear in several stages because a score function and a
 # residue type set are inputs to all of them, even though neither is a CLI flag today.
+#
+# `ligands` is in ALL FOUR stages, and that is not over-caution. A ligand file changes
+# what the pose IS (structure), which residues are within reach of each other (contacts),
+# what the packer is scoring against while it builds a decoy (ensemble), and every pair
+# energy read off the result (measurement). Its value is a list of CONTENT hashes -- see
+# ligand_params.ligands_setting -- because `--ligand-sdf hit.sdf` names a different
+# molecule tomorrow if the screen was re-run, and a key over the path would happily reuse
+# an ensemble built for the old one.
 STAGE_INPUTS = {
-    "structure": ("structure_key", "init_flags"),
+    "structure": ("structure_key", "init_flags", "ligands"),
     "contacts": ("structure_key", "init_flags", "contact_atom", "cutoff", "min_seq_sep",
-                 "ligand_cutoff"),
+                 "ligand_cutoff", "ligands"),
     "ensemble": ("structure_key", "init_flags", "weights", "protocol", "repeats",
-                 "seed", "n_decoys", "packing_seed", "freeze_ligand"),
+                 "seed", "n_decoys", "packing_seed", "freeze_ligand", "ligands"),
     # INVARIANT: measurement contains every ensemble field. A measured artefact is
     # produced FROM decoy structures, so anything that changes what a decoy is must also
     # invalidate the measurement. Adding a field to `ensemble` and not here would let a
     # measurement be reused across structurally different ensembles -- silently, which is
     # the whole class of bug this module exists to stop. Asserted below.
     "measurement": ("structure_key", "init_flags", "weights", "protocol", "repeats",
-                    "seed", "n_decoys", "packing_seed", "freeze_ligand",
+                    "seed", "n_decoys", "packing_seed", "freeze_ligand", "ligands",
                     "background_weight", "readout", "packing_frustration"),
 }
 
@@ -90,7 +98,15 @@ def regeneration_key(settings, stage):
 
     fields = list(STAGE_INPUTS[stage])
     if stage == "measurement" and settings.get("readout") != "pair":
-        fields += ["contact_atom", "cutoff", "min_seq_sep"]
+        # `ligand_cutoff` belongs here for the same reason as `cutoff`: at a
+        # neighbourhood readout the contact map enters the energies through row_i + row_j,
+        # and ligand_cutoff decides which protein-ligand pairs are in that map. Omitting
+        # it made two measurements with different ligand cutoffs compare EQUAL:
+        #     readout=neighbourhood, ligand_cutoff 6.0 vs 9.0
+        #       contacts key differs:    True
+        #       measurement key differs: False     <- wrong
+        #       (control) cutoff 10 vs 8 differs:  True
+        fields += ["contact_atom", "cutoff", "min_seq_sep", "ligand_cutoff"]
 
     missing = [f for f in fields if f not in settings]
     if missing:
@@ -117,7 +133,7 @@ def describe_mismatch(old, new, stage):
     fields = list(STAGE_INPUTS[stage])
     if stage == "measurement" and (old.get("readout") != "pair"
                                    or new.get("readout") != "pair"):
-        fields += ["contact_atom", "cutoff", "min_seq_sep"]
+        fields += ["contact_atom", "cutoff", "min_seq_sep", "ligand_cutoff"]
     out = []
     for f in sorted(set(fields)):
         a, b = old.get(f, "<absent>"), new.get(f, "<absent>")

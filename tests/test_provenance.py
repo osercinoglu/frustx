@@ -24,7 +24,7 @@ def _settings(**over):
         protocol="min", repeats=1, seed=0, n_decoys=100, packing_seed=None,
         background_weight=0.0, readout="pair", packing_frustration=False,
         contact_atom="CA", cutoff=10.0, min_seq_sep=1, ligand_cutoff=6.0,
-        freeze_ligand=True,
+        freeze_ligand=True, ligands=(),
     )
     base.update(over)
     return base
@@ -65,7 +65,7 @@ def test_the_contact_map_enters_the_measurement_only_at_neighbourhood_readout():
 
 @pytest.mark.parametrize("field", ["protocol", "repeats", "seed", "n_decoys",
                                    "weights", "structure_key", "init_flags",
-                                   "packing_seed", "freeze_ligand"])
+                                   "packing_seed", "freeze_ligand", "ligands"])
 def test_every_ensemble_input_actually_moves_the_key(field):
     """Guards against a field being listed in STAGE_INPUTS but silently unused -- e.g.
     if the digest were taken over a hardcoded subset."""
@@ -171,3 +171,59 @@ def test_freeze_ligand_invalidates_both_stages():
 def test_ligand_cutoff_invalidates_the_contact_map():
     a, b = _settings(ligand_cutoff=6.0), _settings(ligand_cutoff=7.0)
     assert regeneration_key(a, "contacts") != regeneration_key(b, "contacts")
+
+
+def test_ligand_cutoff_invalidates_the_measurement_only_at_a_neighbourhood_readout():
+    """Non-vacuous in both directions, which is why both halves are asserted.
+
+    At readout="pair" apply_readout returns the energies untouched, so the contact map
+    never enters the measurement and ligand_cutoff MUST NOT invalidate it -- a key that
+    over-invalidates throws away work for no reason. At readout="neighbourhood" the map
+    enters through row_i + row_j and it MUST.
+
+    Measured before the fix: `contacts differs=True, measurement differs=False`, while the
+    protein `cutoff` control on the same dict already differed. So the omission was
+    specific to ligand_cutoff rather than to the conditional as a whole.
+    """
+    nb = _settings(readout="neighbourhood")
+    assert regeneration_key(nb, "measurement") != \
+        regeneration_key(_settings(readout="neighbourhood", ligand_cutoff=9.0),
+                         "measurement")
+
+    pair = _settings(readout="pair")
+    assert regeneration_key(pair, "measurement") == \
+        regeneration_key(_settings(readout="pair", ligand_cutoff=9.0), "measurement")
+
+
+def test_the_dump_decoy_samples_settings_dict_is_still_hashable():
+    """scripts/dump_decoy_samples.py builds a settings dict that no test covers.
+
+    regeneration_key raises on a missing field, so adding one to STAGE_INPUTS breaks that
+    script -- and the eight checkpoint tests exercise `_load_checkpoint` only, never the
+    construction, so the script can be dead while pytest is green. It has happened twice
+    already for other reasons: it is an external consumer of a private structure.
+
+    This asserts the KEYS agree with what the stages require, without importing the
+    script (it pulls in PyRosetta at module scope).
+    """
+    import ast
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[1] / "scripts" / "dump_decoy_samples.py"
+    tree = ast.parse(source.read_text())
+    literals = [n.value for n in ast.walk(tree)
+                if isinstance(n, ast.Assign) and isinstance(n.value, ast.Dict)
+                and any(getattr(t, "id", "") == "_SETTINGS" for t in n.targets)]
+    assert literals, "_SETTINGS is no longer a plain assignment; update this test"
+
+    # There are two: an empty module-level placeholder, and the real one main() fills in.
+    # Only the populated one can be checked, and requiring exactly one populated dict is
+    # what keeps this test honest if a third appears.
+    populated = [d for d in literals if d.keys]
+    assert len(populated) == 1, f"expected one populated _SETTINGS, found {len(populated)}"
+
+    keys = {k.value for k in populated[0].keys if isinstance(k, ast.Constant)}
+    required = set(STAGE_INPUTS["ensemble"])
+    assert not (required - keys), (
+        f"scripts/dump_decoy_samples.py is missing {sorted(required - keys)} and will "
+        f"raise KeyError at run time")

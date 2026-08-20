@@ -41,7 +41,7 @@ def _settings(protocol="min", n_decoys=4, structure_key="abc"):
     return {
         "structure_key": structure_key, "init_flags": "-mute all", "weights": "ref2015",
         "protocol": protocol, "repeats": 1, "seed": 0, "n_decoys": n_decoys,
-        "packing_seed": None, "freeze_ligand": True,
+        "packing_seed": None, "freeze_ligand": True, "ligands": (),
     }
 
 

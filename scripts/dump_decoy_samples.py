@@ -155,6 +155,9 @@ def main(pdb, out, n_decoys, protocol, n_jobs=1):
         # than defaulted: regeneration_key raises on a missing setting precisely so a key
         # computed without it cannot compare equal to one computed with it.
         "freeze_ligand": True,
+        # Same reasoning: required, not defaulted. A list of ligand content keys; empty
+        # because this script scores a protein-only pose.
+        "ligands": (),
     }
     key = provenance.regeneration_key(_SETTINGS, "ensemble")
     decoys, native, done = _load_checkpoint(partial, n_decoys, n, key)
