@@ -2648,3 +2648,105 @@ likewise matches a brute-force double loop bitwise, on ragged residues of 1 to 3
 were checked against a peptide with ATP appended: heavy counts 4 for glycine and 33 for
 ATP, `is_protein` False for ATP alone, and the ligand gets finite heavy-atom distances to
 every protein residue where the CA rule gives it no coordinate at all.
+
+## Tier 3: ligands
+
+Designed by three parallel agents and adversarially verified by three more. One design
+came back **flawed** and two **sound-with-fixes**, which is the reason to record what was
+implemented rather than what was proposed.
+
+### What tier 3 actually requires, established by probe
+
+Rosetta **ships params** for ATP (33 heavy-indexed atoms, no CA), ZN, MG and other
+coenzymes in the default `fa_standard` set. No vendoring of `molfile_to_params.py`, no
+`-extra_res_fa`, no licensing decision. That removes what looked like the gating item:
+params generation is needed only for *arbitrary novel* ligands, not to build or test any
+of the machinery.
+
+With a ligand in the pose:
+
+| Layer | Status |
+|---|---|
+| Pair energies | **Already work.** `pair_energy_matrix` is kind-agnostic; 8 of 10 protein-ligand pairs carried nonzero energy on first probe. |
+| Contact geometry | Blocked — a ligand has no CA. **Now fixed.** |
+| Decoy generation | Blocked — `pose.sequence()` returns `Z` for ATP and `shuffle_sequence` permutes it like an amino acid, so `make_decoy` raises `IndexError`. **Not yet fixed.** |
+
+### A bug in the tier-2 geometry, caught by the review
+
+`heavy_atom_coords_from_pose` used `nheavyatoms()` as the atom count. **That counts
+VIRTUAL atoms**, and for exactly the residues this function exists to serve: Rosetta's
+metal params carry a shell of them at the coordination positions — ZN reports 5 heavy
+atoms and has **1 real**, MG reports 7 and has 1. They sit 1.0–2.2 A off the metal, so
+feeding them to a minimum-distance rule shrinks every distance to that ion and invents
+contacts no atom supports. Measured: **2.04 A of phantom shortening and 6 reported
+contacts against 5 real** at 6 A on a zinc.
+
+ATP carries two virtual atoms as well, but they sit 0.00 A from real atoms and cannot move
+a minimum — **which is why testing with a ligand and not an ion hid this completely**.
+
+The test that should have caught it was circular: it asserted the extracted count equalled
+`nheavyatoms()`, the very quantity under suspicion. It now asserts against the ion's
+chemistry — a zinc is one atom — and a second test builds the buggy coordinates explicitly
+and requires the two to disagree.
+
+### The contact rule
+
+    protein-protein   dist_protein <= cutoff          (the paper's Ca-Ca rule, 10.0 A)
+    anything else     dist_heavy   <= ligand_cutoff   (minimum heavy-atom, 6.0 A)
+
+**6.0 A is not arbitrary** — it is Rosetta's etable interaction radius (`fa_max_dis`), so
+it is where REF2015 pair terms stop firing between heavy atoms. Every one of 186
+protein-protein pairs within 6.0 A minimum-heavy on 1XTQ carries nonzero `e_ij` (0.0%
+dead), against 7.5% dead at 7.0 A and 30.9% at 8.0 A.
+
+**But it is not calibrated to match the protein branch, and that is stated rather than
+hidden.** Only 73% of the pairs `CA <= 10.0` admits also satisfy `heavy-min <= 6.0`, and
+the count-matched equivalent is nearer 7.0 A. Hydrogens also carry REF2015 past 6.0 A of
+heavy separation — protein-protein pairs show nonzero `e_ij` out to 7.85 A. So 6.0 A is
+the *conservative* choice, not the count-matched one, and it is a parameter because the
+paper says nothing about ligands at all.
+
+### Sequence separation was measured on the wrong quantity
+
+`min_seq_sep` counted **flat list position**. Rosetta gives a HETATM the same chain letter
+as the protein it sits in, so a ligand parsed between two covalently adjacent residues
+inflated their separation from 1 to 2 and **un-dropped a pair `min_seq_sep=2` exists to
+drop**. Measured on a real structure: moving a MG from the end of a chain to mid-chain,
+coordinates unchanged, changed which pairs survived.
+
+**Two fixes were needed, and they correct opposite errors:**
+
+1. Count separation in **polymer ordinals** (`cumsum(is_protein) - 1`), so a heteroatom
+   contributes zero separation instead of one.
+2. Apply the mask **only to protein-protein pairs**. The ordinal alone is not enough — it
+   gives a ligand its predecessor's ordinal, so separation from the neighbouring residue
+   becomes 0 and every protein-ligand contact at the insertion point silently vanishes.
+
+Fixing one and not the other leaves the opposite bug, and both are silent. The second was
+found by the test suite, not by the review: the review's recommendation was fix (1) alone
+and explicitly called the conjunction "redundant".
+
+### Ligand-ligand pairs are excluded by default
+
+Not because they are uninteresting. **Eq. 1 cannot be computed for them.** A decoy differs
+from the native only by a shuffled protein sequence and a repack, so a pair with no
+protein endpoint has no shuffleable identity and often no movable chi; its decoy spread is
+floating-point residue rather than a sampled distribution.
+
+**That is worse than a missing row.** `np.where(std > 0, ...)` (`frustration.py:141`,
+`:653`) is a BIT-LEVEL test: a sigma of 1e-16 passes it and Eq. 1 returns a clean finite
+number that `classify()` will label minimally or highly frustrated. Protein-ligand pairs
+are kept — those have a varying endpoint.
+
+### Open, and NOT changed unilaterally: the `std > 0` guard
+
+The review argues `std > 0` should be `std > tol`, with `tol` tied to the 0.02 dead-contact
+threshold `config.py` already documents. The mechanism is real and reproducible —
+catastrophic cancellation in `total_sq/N - mean^2` leaves a spurious nonzero sigma (1.7e-07
+measured on synthetic identical energies), which passes the bit-level guard.
+
+**This is left alone deliberately.** `config.py` records that 1824 of 7687 contacts (23.7%)
+across the six GTPase runs have sigma <= 0.02. Changing the guard would turn those from
+finite indices into NaN — a change to published numbers and to what the tool claims, which
+is a scientific decision, not a bug fix. Recorded here for that decision to be made
+explicitly.

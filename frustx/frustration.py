@@ -214,9 +214,21 @@ def heavy_atom_coords_from_pose(pose):
     by an order of magnitude -- glycine has 4 heavy atoms, ATP has 33 -- and padding
     would need a sentinel that every consumer then has to remember to mask.
 
-    Rosetta orders heavy atoms FIRST within a residue, so nheavyatoms() is a prefix
-    count and no per-atom hydrogen test is needed. Verified by probe rather than taken
-    from the documentation.
+    Rosetta orders heavy atoms FIRST within a residue, so nheavyatoms() is a prefix count
+    and no per-atom hydrogen test is needed.
+
+    But nheavyatoms() is NOT the same as "real atoms", and the difference is not a corner
+    case for exactly the residues this function exists to serve: it COUNTS VIRTUAL ATOMS.
+    Rosetta's metal params carry a shell of them at the coordination positions -- ZN has
+    5 heavy atoms of which 4 are virtual, MG has 7 of which 6. Those are fictitious points
+    sitting 1.0-2.2 A off the metal, and feeding them to a minimum-distance rule shrinks
+    every distance to that ion and invents contacts that no atom supports. Measured on a
+    real MG site: up to 0.99 A of inflation and 8 real contacts at 6 A reported as 10.
+
+    So virtual atoms are filtered explicitly. ATP carries two as well; they happen to sit
+    0.00 A from real atoms so they cannot move a minimum, which is precisely why this was
+    invisible when the function was first written and tested against a ligand rather than
+    an ion.
 
     This is what a ligand contact rule is built on: a ligand has no CA and no CB, so the
     only geometry it shares with a protein residue is atom positions.
@@ -225,6 +237,8 @@ def heavy_atom_coords_from_pose(pose):
     for i in range(1, pose.total_residue() + 1):
         r = pose.residue(i)
         for k in range(1, r.nheavyatoms() + 1):
+            if r.is_virtual(k):
+                continue
             coords.append(np.array(r.xyz(k)))
         offsets.append(len(coords))
     return np.asarray(coords, dtype=np.float64), np.asarray(offsets, dtype=np.intp)

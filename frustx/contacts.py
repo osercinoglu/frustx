@@ -18,7 +18,8 @@ import numpy as np
 from Bio.PDB import PDBParser
 from Bio.PDB.Polypeptide import is_aa
 
-from frustx.config import CONTACT_ATOMS, DEFAULT_CONTACT_ATOM, DEFAULT_CUTOFF
+from frustx.config import (CONTACT_ATOMS, DEFAULT_CONTACT_ATOM, DEFAULT_CUTOFF,
+                          DEFAULT_LIGAND_CUTOFF)
 
 
 @dataclass(frozen=True)
@@ -326,15 +327,111 @@ def select_pairs(residues, dist, cutoff=DEFAULT_CUTOFF, min_seq_sep=1):
     close = np.triu(dist <= cutoff, k=1)
 
     if min_seq_sep > 1:
-        # Sequence separation is only meaningful within one chain: residues in
-        # different chains are never "sequential neighbours" however close their
-        # indices happen to be in our flat numbering.
-        chain_ids = np.array([r.chain for r in residues])
-        same_chain = chain_ids[:, None] == chain_ids[None, :]
-        idx = np.arange(n)
-        sep = np.abs(idx[:, None] - idx[None, :])
-        too_close_in_sequence = same_chain & (sep < min_seq_sep)
-        close &= ~too_close_in_sequence
+        close &= ~_too_close_in_sequence(residues, min_seq_sep)
+
+    i, j = np.nonzero(close)
+    return np.column_stack([i, j])
+
+
+def _too_close_in_sequence(residues, min_seq_sep, is_protein=None):
+    """Mask of pairs excluded for being near-neighbours in the polymer.
+
+    Sequence separation is only meaningful within one chain: residues in different chains
+    are never "sequential neighbours" however close their indices happen to be in our flat
+    numbering.
+
+    Separation is counted in POLYMER ordinals, not list positions, and the difference is
+    not cosmetic once a structure contains heteroatoms. Rosetta gives a HETATM the same
+    chain letter as the protein it sits in, so a ligand or ion parsed between two
+    covalently adjacent residues inflates their separation from 1 to 2 and UN-DROPS a pair
+    that min_seq_sep=2 exists to drop. The contact set would then depend on where the
+    HETATM records happen to sit in the file -- measured on a real structure, moving a MG
+    from the end of a chain to mid-chain changed which pairs survived, with identical
+    coordinates.
+
+    `is_protein` may be omitted when every residue is protein, which is the case for every
+    run this project has made so far; the ordinal is then just the list position.
+    """
+    n = len(residues)
+    chain_ids = np.array([r.chain for r in residues])
+    same_chain = chain_ids[:, None] == chain_ids[None, :]
+
+    if is_protein is None:
+        ordinal = np.arange(n)
+    else:
+        is_protein = np.asarray(is_protein, dtype=bool)
+        # cumsum - 1 gives each protein residue its position among protein residues; a
+        # heteroatom takes its predecessor's ordinal and so contributes ZERO separation
+        # rather than one.
+        ordinal = np.cumsum(is_protein) - 1
+
+    sep = np.abs(ordinal[:, None] - ordinal[None, :])
+    return same_chain & (sep < min_seq_sep)
+
+
+def select_pairs_by_kind(residues, dist_protein, dist_heavy, is_protein,
+                         cutoff=DEFAULT_CUTOFF, ligand_cutoff=DEFAULT_LIGAND_CUTOFF,
+                         min_seq_sep=1, include_ligand_ligand=False):
+    """Contact pairs when the structure contains non-protein residues.
+
+        protein-protein   dist_protein <= cutoff          (the paper's Ca-Ca rule)
+        anything else     dist_heavy   <= ligand_cutoff   (minimum heavy-atom distance)
+
+    A ligand has no CA and no CB, so the paper's criterion gives it no answer at all --
+    and `np.nan <= cutoff` is False, which would silently report that the ligand touches
+    nothing. See DEFAULT_LIGAND_CUTOFF in config.py for where 6.0 A comes from and why it
+    is a parameter.
+
+    `include_ligand_ligand` defaults False, so ligand-ligand, ligand-ion, ion-water and
+    water-water pairs are excluded. The reason is not that they are uninteresting but that
+    Eq. 1 CANNOT BE COMPUTED for them: a decoy differs from the native only by a shuffled
+    protein sequence and a repack, so a pair with no protein endpoint has no shuffleable
+    identity and often no movable chi. Its decoy spread is then floating-point residue
+    rather than a sampled distribution, and the Z-score's denominator is noise. That is
+    worse than a missing row: `np.where(std > 0, ...)` is a BIT-LEVEL test, so a sigma of
+    1e-16 passes it and Eq. 1 returns a clean finite number that classify() will label
+    minimally or highly frustrated. Excluding these pairs is the honest default; set the
+    flag if you want them and intend to filter on sigma yourself.
+
+    Protein-LIGAND pairs are kept -- those have a protein endpoint and so do vary.
+    """
+    n = len(residues)
+    is_protein = np.asarray(is_protein, dtype=bool)
+    if is_protein.shape != (n,):
+        raise ValueError(f"is_protein is {is_protein.shape}, expected ({n},)")
+    for name, d in (("dist_protein", dist_protein), ("dist_heavy", dist_heavy)):
+        if d.shape != (n, n):
+            raise ValueError(f"{name} is {d.shape}, expected ({n}, {n})")
+    if np.isnan(dist_heavy).any():
+        # dist_protein is allowed to be NaN -- that is exactly what a ligand's missing CA
+        # produces, and the point of this function is that such a pair never consults it.
+        # dist_heavy is the fallback, so a NaN there has nothing behind it.
+        raise ValueError("dist_heavy contains NaN; every residue must have heavy atoms")
+
+    both_protein = is_protein[:, None] & is_protein[None, :]
+    neither = ~is_protein[:, None] & ~is_protein[None, :]
+
+    # np.where, not a masked assignment: dist_protein is NaN wherever a ligand is
+    # involved, and NaN <= cutoff is False, so the protein branch is inert there anyway --
+    # but relying on that would make the correctness of this line depend on a silent
+    # comparison rather than on the mask. Say it explicitly.
+    close = np.where(both_protein, dist_protein <= cutoff, dist_heavy <= ligand_cutoff)
+    if not include_ligand_ligand:
+        close &= ~neither
+
+    close = np.triu(close, k=1)
+    if min_seq_sep > 1:
+        # Restricted to protein-protein pairs, AND counted in polymer ordinals. BOTH are
+        # needed and they fix opposite errors:
+        #   - the ordinal stops a heteroatom parsed between two covalently adjacent
+        #     residues from inflating their separation and UN-dropping them;
+        #   - the both_protein conjunction stops a ligand from being dropped for
+        #     "adjacency" it cannot have. A ligand takes its predecessor's ordinal, so
+        #     without this its separation from the neighbouring residue is 0 and every
+        #     protein-ligand contact at the insertion point would vanish.
+        # Fixing only one leaves the other, and each is silent.
+        close &= ~(both_protein & _too_close_in_sequence(residues, min_seq_sep,
+                                                        is_protein))
 
     i, j = np.nonzero(close)
     return np.column_stack([i, j])

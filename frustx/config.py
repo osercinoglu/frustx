@@ -79,6 +79,29 @@ DEFAULT_READOUT = "pair"
 READOUT_SCOPES = ("pair", "neighbourhood")
 
 
+# --- Ligand contact cutoff ----------------------------------------------------------
+#
+# A ligand has no CA and no CB, so the paper's Ca-Ca criterion is not merely inaccurate
+# for it -- it is UNDEFINED. Any pair involving a non-protein residue therefore falls back
+# to a minimum heavy-atom distance, and needs its own cutoff.
+#
+# 6.0 A is not arbitrary: it is exactly Rosetta's etable interaction radius
+# (`score:fa_max_dis` = 6.0), so it is the distance beyond which REF2015 pair terms stop
+# firing between heavy atoms. Measured on 1XTQ: every one of the 186 protein-protein pairs
+# within 6.0 A minimum-heavy carries a nonzero e_ij (0.0% energetically dead), against
+# 2.9% dead at 6.5 A, 7.5% at 7.0 A and 30.9% at 8.0 A.
+#
+# AMBIGUITY, stated rather than hidden. 6.0 A is NOT calibrated to match the protein
+# branch: only 73% of the pairs CA <= 10.0 admits also satisfy heavy-min <= 6.0, and the
+# count-matched equivalent of CA <= 10.0 (248 pairs) is about 7.0 A (240 pairs), not 6.0
+# (186 pairs). Hydrogens also carry REF2015 past 6.0 A of HEAVY-atom separation --
+# protein-protein pairs show nonzero e_ij out to 7.85 A minimum-heavy. So 6.0 A is the
+# conservative choice (every admitted pair is energetically live) rather than the
+# count-matched one, and it is exposed as a parameter because the paper says nothing
+# about ligands at all.
+DEFAULT_LIGAND_CUTOFF = 6.0
+
+
 # --- Contact representative atom ----------------------------------------------------
 #
 # "CA" is the paper's definition, quoted in contacts.py, and stays the default so runs

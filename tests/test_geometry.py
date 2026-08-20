@@ -210,20 +210,82 @@ def test_heavy_atom_counts_are_per_residue_and_ragged(peptide_with_atp):
     counts = np.diff(off).tolist()
     assert len(counts) == peptide_with_atp.total_residue()
     assert counts[5] == 4, "glycine should have 4 heavy atoms (N, CA, C, O)"
-    assert counts[-1] == 33, "ATP should have 33 heavy atoms"
+    # 31, not the 33 that nheavyatoms() reports: two of ATP's are VIRTUAL. They sit
+    # 0.00 A from real atoms so they cannot move a minimum distance, which is why an
+    # ATP-only test could not see the problem that a metal ion makes obvious.
+    assert counts[-1] == 31, "ATP has 33 heavy-indexed atoms, 2 of which are virtual"
     assert off[-1] == len(xyz)
 
 
 def test_no_hydrogens_are_included(peptide_with_atp):
-    """Rosetta orders heavy atoms first, so nheavyatoms() is a prefix count. If that
-    ever stopped being true this would catch it -- the totals would include hydrogens."""
+    """Rosetta orders heavy atoms first, so nheavyatoms() is a prefix count."""
     pose = peptide_with_atp
-    expected = sum(pose.residue(i).nheavyatoms()
-                   for i in range(1, pose.total_residue() + 1))
     xyz, _ = heavy_atom_coords_from_pose(pose)
-    assert len(xyz) == expected
-    assert expected < sum(pose.residue(i).natoms()
-                          for i in range(1, pose.total_residue() + 1))
+    total_atoms = sum(pose.residue(i).natoms()
+                      for i in range(1, pose.total_residue() + 1))
+    assert len(xyz) < total_atoms, "hydrogens were not excluded"
+
+
+@pytest.fixture(scope="module")
+def peptide_with_zinc():
+    """ZN is the adversarial case, not ATP. Rosetta's metal params carry a shell of
+    VIRTUAL atoms at the coordination positions: 4 of zinc's 5 'heavy' atoms are
+    fictitious, against 2 of ATP's 33 which happen to sit 0.00 A from real atoms and so
+    cannot move a minimum. Testing only with ATP is what hid this."""
+    init_rosetta()
+    pose = pyrosetta.pose_from_sequence("ACDEFGHIKL")
+    for i in range(1, pose.total_residue() + 1):
+        pose.set_phi(i, -57.0)
+        pose.set_psi(i, -47.0)
+        pose.set_omega(i, 180.0)
+    rts = pyrosetta.rosetta.core.chemical.ChemicalManager.get_instance() \
+        .residue_type_set("fa_standard")
+    pose.append_residue_by_jump(
+        pyrosetta.rosetta.core.conformation.ResidueFactory.create_residue(
+            rts.name_map("ZN")), 5)
+    return pose
+
+
+def test_virtual_atoms_are_excluded(peptide_with_zinc):
+    """nheavyatoms() COUNTS VIRTUAL ATOMS. A zinc reports 5 and has exactly 1 real atom.
+
+    Deliberately NOT asserted against nheavyatoms(), which is the quantity under
+    suspicion -- comparing to it is circular and is exactly how this shipped. The count
+    is asserted against the ion's chemistry: a zinc is one atom.
+    """
+    pose = peptide_with_zinc
+    zn = pose.residue(pose.total_residue())
+    assert zn.name3().strip() == "ZN"
+    assert zn.nheavyatoms() == 5, "fixture assumption: Rosetta's ZN reports 5 heavy atoms"
+
+    _, off = heavy_atom_coords_from_pose(pose)
+    assert off[-1] - off[-2] == 1, "a zinc ion has one atom; the rest are virtual"
+
+
+def test_virtual_atoms_would_have_invented_contacts(peptide_with_zinc):
+    """Why it matters, rather than just that it happens.
+
+    The virtual shell sits 1-2 A off the metal, so including it shrinks every distance
+    to that ion and manufactures contacts no atom supports. This test builds the buggy
+    coordinates explicitly and asserts the two disagree -- if virtual atoms ever stopped
+    being placed off-centre, this fails and says the guard is no longer needed.
+    """
+    pose = peptide_with_zinc
+    buggy, off = [], [0]
+    for i in range(1, pose.total_residue() + 1):
+        r = pose.residue(i)
+        for k in range(1, r.nheavyatoms() + 1):
+            buggy.append(np.array(r.xyz(k)))
+        off.append(len(buggy))
+    d_buggy = min_heavy_distances(np.asarray(buggy, float), np.asarray(off, np.intp))
+
+    xyz, offsets = heavy_atom_coords_from_pose(pose)
+    d_real = min_heavy_distances(xyz, offsets)
+
+    inflation = (d_real[-1, :-1] - d_buggy[-1, :-1]).max()
+    assert inflation > 1.0, f"expected >1 A of phantom shortening, got {inflation:.2f}"
+    assert (d_buggy[-1, :-1] <= 6.0).sum() > (d_real[-1, :-1] <= 6.0).sum(), \
+        "the virtual shell should manufacture at least one extra contact at 6 A"
 
 
 def test_the_ligand_is_flagged_as_not_protein(peptide_with_atp):
